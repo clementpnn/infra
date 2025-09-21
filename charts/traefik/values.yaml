@@ -1,11 +1,12 @@
 traefik:
   deployment:
     kind: DaemonSet
-  ports:
+    ports:
     websecure:
       port: 443
-      expose: true
       hostPort: 443
+      expose:
+        default: true
       tls:
         enabled: true
   dashboard:
@@ -16,4 +17,3 @@ traefik:
   additionalArguments:
     - "--api.insecure=true"
     - "--serverstransport.insecureskipverify=true"
-    - "--entrypoints.websecure.http.tls.certresolver=myresolver"
