@@ -7,8 +7,6 @@ gitlab:
       class: traefik
   nginx-ingress:
     enabled: false
-  certmanager:
-    install: false
   webservice:
     resources:
       requests:
