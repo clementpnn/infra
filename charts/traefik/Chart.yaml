@@ -1,0 +1,10 @@
+apiVersion: v2
+name: traefik-wrapper
+description: Mon chart pour déployer Traefik.
+type: application
+version: 0.1.0
+
+dependencies:
+  - name: traefik
+    repository: "https://traefik.github.io/charts"
+    version: "37.1.1"

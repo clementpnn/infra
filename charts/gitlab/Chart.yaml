@@ -1,0 +1,11 @@
+apiVersion: v2
+name: gitlab-wrapper
+description: Mon chart personnel pour déployer GitLab via le chart officiel.
+type: application
+version: 0.1.0
+appVersion: "18.4"
+
+dependencies:
+  - name: gitlab
+    repository: "https://charts.gitlab.io/"
+    version: "9.4"

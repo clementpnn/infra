@@ -1,0 +1,22 @@
+gitlab:
+  global:
+    hosts:
+      domain: gitlab.clementpnn.com
+    ingress:
+      configureCertmanager: false
+      class: traefik
+  nginx-ingress:
+    enabled: false
+  certmanager:
+    install: false
+  webservice:
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1.5Gi"
+  gitaly:
+    persistence:
+      size: 50Gi
+  postgresql:
+    persistence:
+      size: 10Gi
