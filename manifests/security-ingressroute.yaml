@@ -1,0 +1,646 @@
+# =============================================================================
+# IngressRoutes Traefik Production pour Stack de Sécurité
+# =============================================================================
+#
+# Configuration production pour l'exposition de la stack de sécurité via Traefik :
+# - OPNsense (firewall management interface)
+# - Coraza WAF (web application firewall interface)
+#
+# Avec :
+# - HTTPS automatique via Cert-Manager (Let's Encrypt)
+# - Redirection HTTP vers HTTPS obligatoire
+# - Headers de sécurité renforcés
+# - Authentification basique obligatoire
+# - Rate limiting strict pour interfaces d'administration
+# - Gestion d'erreurs personnalisées
+# - Monitoring et logs de sécurité
+#
+# =============================================================================
+
+---
+# IngressRoute HTTPS pour OPNsense Management Interface
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: opnsense-https
+  namespace: security
+  labels:
+    app.kubernetes.io/name: opnsense
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: security-stack
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`firewall.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: opnsense-web-proxy
+          port: 443
+          scheme: https
+      middlewares:
+        - name: security-headers
+        - name: opnsense-auth
+        - name: admin-rate-limit
+        - name: security-ip-whitelist
+  tls:
+    secretName: opnsense-tls
+    domains:
+      - main: firewall.clementpnn.com
+
+---
+# IngressRoute HTTP redirect pour OPNsense
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: opnsense-http-redirect
+  namespace: security
+  labels:
+    app.kubernetes.io/name: opnsense
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`firewall.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: opnsense-web-proxy
+          port: 443
+      middlewares:
+        - name: https-redirect
+
+---
+# IngressRoute HTTPS pour Coraza WAF Management Interface
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: coraza-waf-https
+  namespace: security
+  labels:
+    app.kubernetes.io/name: coraza
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: security-stack
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`waf.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: coraza-proxy
+          port: 8443
+          scheme: https
+      middlewares:
+        - name: security-headers
+        - name: coraza-auth
+        - name: admin-rate-limit
+        - name: security-ip-whitelist
+  tls:
+    secretName: coraza-waf-tls
+    domains:
+      - main: waf.clementpnn.com
+
+---
+# IngressRoute HTTP redirect pour Coraza WAF
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: coraza-waf-http-redirect
+  namespace: security
+  labels:
+    app.kubernetes.io/name: coraza
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`waf.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: coraza-proxy
+          port: 8443
+      middlewares:
+        - name: https-redirect
+
+---
+# IngressRoute pour Coraza WAF API (pour intégration avec d'autres services)
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: coraza-waf-api-https
+  namespace: security
+  labels:
+    app.kubernetes.io/name: coraza
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: security-stack
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`waf-api.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: coraza-proxy
+          port: 8080
+          scheme: http
+      middlewares:
+        - name: security-headers
+        - name: api-auth
+        - name: api-rate-limit
+  tls:
+    secretName: coraza-waf-api-tls
+    domains:
+      - main: waf-api.clementpnn.com
+
+---
+# Middleware pour redirection HTTPS obligatoire
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: middleware
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+
+---
+# Middleware pour headers de sécurité renforcés (administration)
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: middleware
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: https
+      X-Forwarded-Port: "443"
+      X-Real-IP: ""
+    customResponseHeaders:
+      # Headers de sécurité maximale pour interfaces d'admin
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: DENY
+      X-XSS-Protection: "1; mode=block"
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+      Referrer-Policy: no-referrer
+      Permissions-Policy: "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+      X-Permitted-Cross-Domain-Policies: none
+
+      # Headers pour éviter la mise en cache des pages d'admin
+      Cache-Control: "no-cache, no-store, must-revalidate, max-age=0"
+      Pragma: "no-cache"
+      Expires: "0"
+
+      # CSP très strict pour interfaces d'administration
+      Content-Security-Policy: >-
+        default-src 'self';
+        script-src 'self' 'unsafe-inline';
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data:;
+        font-src 'self';
+        connect-src 'self';
+        form-action 'self';
+        frame-ancestors 'none';
+        object-src 'none';
+        base-uri 'none';
+        upgrade-insecure-requests
+
+---
+# Middleware d'authentification pour OPNsense
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: opnsense-auth
+  namespace: security
+  labels:
+    app.kubernetes.io/name: opnsense
+    app.kubernetes.io/component: middleware
+spec:
+  basicAuth:
+    secret: security-admin-auth
+    realm: "OPNsense Firewall Administration - Restricted Access"
+
+---
+# Middleware d'authentification pour Coraza WAF
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: coraza-auth
+  namespace: security
+  labels:
+    app.kubernetes.io/name: coraza
+    app.kubernetes.io/component: middleware
+spec:
+  basicAuth:
+    secret: security-admin-auth
+    realm: "Coraza WAF Administration - Restricted Access"
+
+---
+# Middleware d'authentification pour API WAF
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: api-auth
+  namespace: security
+  labels:
+    app.kubernetes.io/name: coraza
+    app.kubernetes.io/component: middleware
+spec:
+  basicAuth:
+    secret: security-api-auth
+    realm: "Coraza WAF API - Service Access"
+
+---
+# Middleware de rate limiting strict pour interfaces d'administration
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: admin-rate-limit
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: middleware
+spec:
+  rateLimit:
+    period: 1m
+    burst: 20
+    average: 10
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+
+---
+# Middleware de rate limiting pour API
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: api-rate-limit
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: middleware
+spec:
+  rateLimit:
+    period: 1m
+    burst: 100
+    average: 50
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+
+---
+# Middleware de whitelist IP pour sécurité renforcée
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: security-ip-whitelist
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: middleware
+spec:
+  ipWhiteList:
+    sourceRange:
+      # Réseau local d'administration
+      - "192.168.1.0/24"
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      # VPN OPNsense
+      - "10.8.0.0/24"
+      # IP publique d'administration (à ajuster)
+      - "65.21.12.110/32"
+
+---
+# Secret pour l'authentification administrative
+apiVersion: v1
+kind: Secret
+metadata:
+  name: security-admin-auth
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: auth
+type: Opaque
+data:
+  # admin:SecureAdminPass2024! (généré avec htpasswd -B)
+  users: YWRtaW46JDJ5JDEwJE4yTzhQSi5sWEJyVlNxZ0VqVXZsVWVOVUF1YmxDdFFSZk1IUUp1VVZuSjdOcEFjQ2RIV0c=
+
+---
+# Secret pour l'authentification API
+apiVersion: v1
+kind: Secret
+metadata:
+  name: security-api-auth
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: auth
+type: Opaque
+data:
+  # api:SecureAPIKey2024! (généré avec htpasswd -B)
+  users: YXBpOiQyeSQxMCRGTG9SVUVKbkZxN1UwLjl0WFRKR2Z1SE1SdVFzQW5oSkJIbzM4V1E2RE5pcjBiQ2VHeWw2
+
+---
+# Service proxy pour OPNsense externe
+apiVersion: v1
+kind: Service
+metadata:
+  name: opnsense-web-proxy
+  namespace: security
+  labels:
+    app.kubernetes.io/name: opnsense
+    app.kubernetes.io/component: web-proxy
+spec:
+  type: ExternalName
+  externalName: opnsense.clementpnn.local
+  ports:
+    - name: https
+      port: 443
+      targetPort: 443
+      protocol: TCP
+
+---
+# Certificats SSL pour tous les services de sécurité
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: opnsense-tls-certificate
+  namespace: security
+  labels:
+    app.kubernetes.io/name: opnsense
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: opnsense-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - firewall.clementpnn.com
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  subject:
+    organizations:
+      - "Infrastructure Clement"
+    organizationalUnits:
+      - "Security Services"
+    countries:
+      - "FR"
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: coraza-waf-tls-certificate
+  namespace: security
+  labels:
+    app.kubernetes.io/name: coraza
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: coraza-waf-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - waf.clementpnn.com
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  subject:
+    organizations:
+      - "Infrastructure Clement"
+    organizationalUnits:
+      - "Security Services - WAF"
+    countries:
+      - "FR"
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: coraza-waf-api-tls-certificate
+  namespace: security
+  labels:
+    app.kubernetes.io/name: coraza
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: coraza-waf-api-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - waf-api.clementpnn.com
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  subject:
+    organizations:
+      - "Infrastructure Clement"
+    organizationalUnits:
+      - "Security Services - WAF API"
+    countries:
+      - "FR"
+
+---
+# ServiceMonitor pour monitoring des services de sécurité
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: security-stack-monitoring
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/part-of: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      monitoring: "security"
+  namespaceSelector:
+    matchNames:
+      - security
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+      honorLabels: true
+
+---
+# NetworkPolicy pour sécuriser strictement l'accès aux services de sécurité
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: security-ingress-strict
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: security
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Autoriser Traefik UNIQUEMENT pour les IngressRoutes
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8443
+
+    # Autoriser le monitoring depuis Prometheus UNIQUEMENT
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090  # Port métriques
+
+    # Communications internes dans le namespace security
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: security
+
+  egress:
+    # Permettre l'accès vers OPNsense externe (firewall management)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443  # HTTPS vers OPNsense
+        - protocol: TCP
+          port: 22   # SSH pour management
+
+    # Permettre l'accès DNS
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+
+    # Permettre l'envoi de logs vers Loki
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 80   # Loki gateway
+
+    # Permettre l'accès vers services protégés (pour WAF)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+
+---
+# ConfigMap pour configuration avancée de sécurité
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-config
+  namespace: security
+  labels:
+    app.kubernetes.io/name: security-stack
+    app.kubernetes.io/component: config
+data:
+  security-policy.yaml: |
+    # Politique de sécurité pour la stack
+    security:
+      access:
+        # Restriction d'accès par IP
+        allowedNetworks:
+          - "192.168.1.0/24"
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "10.8.0.0/24"  # VPN OPNsense
+
+        # Horaires d'accès autorisés (UTC)
+        timeRestrictions:
+          enabled: false
+          allowedHours: "06:00-22:00"
+          timezone: "Europe/Paris"
+
+        # Authentification renforcée
+        authentication:
+          requireMFA: false
+          sessionTimeout: "1h"
+          maxSessions: 3
+
+      monitoring:
+        # Alertes de sécurité
+        alerts:
+          failedLogins: 5
+          timeWindow: "5m"
+          notification: true
+
+        # Audit logging
+        audit:
+          enabled: true
+          level: "info"
+          retention: "90d"
+
+  waf-rules.conf: |
+    # Règles WAF personnalisées pour l'infrastructure
+    # Ces règles sont appliquées par Coraza
+
+    # Protection contre les scans automatisés
+    SecRule REQUEST_HEADERS:User-Agent "@pm nikto nmap sqlmap burp zaproxy dirbuster" \
+      "id:2001,phase:1,block,msg:'Security scanner detected',tag:'scanner'"
+
+    # Protection des interfaces d'administration
+    SecRule REQUEST_URI "@beginsWith /admin" \
+      "id:2002,phase:1,pass,setvar:tx.admin_access=1,tag:'admin-access'"
+
+    # Rate limiting spécifique pour les tentatives de connexion
+    SecRule REQUEST_URI "@endsWith /login" \
+      "id:2003,phase:1,pass,initcol:ip=%{remote_addr},setvar:ip.login_attempts=+1,expirevar:ip.login_attempts=300"
+
+    SecRule IP:login_attempts "@gt 5" \
+      "id:2004,phase:1,deny,status:429,msg:'Login rate limit exceeded'"
+
+  backup-script.sh: |
+    #!/bin/bash
+    # Script de sauvegarde automatique pour la configuration de sécurité
+    DATE=$(date +%Y%m%d_%H%M%S)
+    BACKUP_DIR="/var/backups/security"
+
+    # Créer le répertoire de sauvegarde
+    mkdir -p "$BACKUP_DIR"
+
+    # Sauvegarder les configurations Kubernetes
+    kubectl get secrets -n security -o yaml > "$BACKUP_DIR/secrets-$DATE.yaml"
+    kubectl get configmaps -n security -o yaml > "$BACKUP_DIR/configmaps-$DATE.yaml"
+    kubectl get ingressroutes -n security -o yaml > "$BACKUP_DIR/ingressroutes-$DATE.yaml"
+
+    # Nettoyer les anciennes sauvegardes (garder 30 jours)
+    find "$BACKUP_DIR" -name "*.yaml" -type f -mtime +30 -delete
+
+    echo "Sauvegarde de sécurité terminée: $BACKUP_DIR"

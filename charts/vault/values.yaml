@@ -1,0 +1,789 @@
+# =============================================================================
+# Configuration Production pour HashiCorp Vault Enterprise
+# =============================================================================
+#
+# Configuration Vault haute disponibilité pour environnement de production avec :
+# - Mode cluster Raft pour haute disponibilité
+# - Auto-unseal avec Kubernetes secrets
+# - Engines de secrets multiples (KV, PKI, Database, Transit)
+# - Intégration Keycloak pour authentification OIDC
+# - Vault Secrets Operator pour intégration K8s
+# - Monitoring et alertes Prometheus
+# - Audit logging vers Loki
+# - Backup automatique et disaster recovery
+# - Politiques d'accès granulaires pour équipes
+#
+# Architecture :
+# - 3 instances Vault en cluster Raft
+# - Load balancing automatique
+# - Persistence haute performance
+# - Chiffrement end-to-end
+# - Intégration native Kubernetes
+#
+# =============================================================================
+
+vault:
+  # =============================================================================
+  # Configuration globale
+  # =============================================================================
+  global:
+    enabled: true
+    tlsDisable: false
+
+    # Configuration des images
+    image:
+      repository: hashicorp/vault
+      tag: "1.15.4"
+      pullPolicy: IfNotPresent
+
+  # =============================================================================
+  # Configuration du serveur Vault
+  # =============================================================================
+  server:
+    enabled: true
+
+    # Mode entreprise - haute disponibilité
+    enterpriseLicense:
+      secretName: ""  # Licence enterprise si disponible
+
+    # Configuration des ressources pour production
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+
+    # Nombre de replicas pour HA
+    replicas: 3
+
+    # Configuration de mise à jour
+    updateStrategy:
+      type: OnDelete
+
+    # Configuration des images
+    image:
+      repository: hashicorp/vault
+      tag: "1.15.4"
+      pullPolicy: IfNotPresent
+
+    # Configuration des volumes
+    volumes:
+      - name: vault-root-token
+        secret:
+          secretName: vault-root-token
+          optional: true
+      - name: vault-unseal-keys
+        secret:
+          secretName: vault-unseal-keys
+          optional: true
+
+    volumeMounts:
+      - name: vault-root-token
+        mountPath: /vault/root-token
+        readOnly: true
+      - name: vault-unseal-keys
+        mountPath: /vault/unseal-keys
+        readOnly: true
+
+    # Configuration des sondes de santé
+    readinessProbe:
+      enabled: true
+      path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+    livenessProbe:
+      enabled: true
+      path: /v1/sys/health?standbyok=true
+      initialDelaySeconds: 60
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 100
+      runAsGroup: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+        add:
+          - IPC_LOCK  # Nécessaire pour Vault
+      readOnlyRootFilesystem: true
+
+    # Configuration du service
+    service:
+      enabled: true
+      type: ClusterIP
+      port: 8200
+      targetPort: 8200
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8200"
+        prometheus.io/path: "/v1/sys/metrics"
+
+    # Configuration de l'ingress (désactivé - on utilise Traefik)
+    ingress:
+      enabled: false
+
+    # Configuration Vault
+    config: |
+      ui = true
+
+      # Configuration du listener
+      listener "tcp" {
+        tls_disable     = false
+        address         = "[::]:8200"
+        cluster_address = "[::]:8201"
+        tls_cert_file   = "/vault/userconfig/vault-tls/tls.crt"
+        tls_key_file    = "/vault/userconfig/vault-tls/tls.key"
+        tls_client_ca_file = "/vault/userconfig/vault-ca/ca.crt"
+
+        # Configuration de sécurité TLS
+        tls_min_version = "tls12"
+        tls_cipher_suites = "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+
+        # Headers de sécurité
+        tls_prefer_server_cipher_suites = true
+      }
+
+      # Configuration du stockage Raft (HA)
+      storage "raft" {
+        path = "/vault/data"
+
+        retry_join {
+          leader_api_addr = "https://vault-0.vault-internal:8200"
+        }
+        retry_join {
+          leader_api_addr = "https://vault-1.vault-internal:8200"
+        }
+        retry_join {
+          leader_api_addr = "https://vault-2.vault-internal:8200"
+        }
+      }
+
+      # Configuration du cluster
+      cluster_addr = "https://HOST_IP:8201"
+      api_addr = "https://HOST_IP:8200"
+
+      # Configuration des métriques
+      telemetry {
+        prometheus_retention_time = "30s"
+        disable_hostname = true
+        enable_hostname_label = false
+      }
+
+      # Configuration des logs
+      log_level = "info"
+      log_format = "json"
+
+      # Configuration du cache
+      cache {
+        use_auto_auth_token = true
+      }
+
+      # Scellement automatique avec Kubernetes
+      seal "kubernetes" {
+        key_name      = "vault-unseal-key"
+        k8s_key_name  = "vault-unseal"
+        k8s_namespace = "secrets"
+      }
+
+    # Variables d'environnement
+    extraEnvironmentVars:
+      VAULT_CACERT: /vault/userconfig/vault-ca/ca.crt
+      VAULT_TLSCERT: /vault/userconfig/vault-tls/tls.crt
+      VAULT_TLSKEY: /vault/userconfig/vault-tls/tls.key
+      VAULT_LOG_LEVEL: info
+      VAULT_LOG_FORMAT: json
+      VAULT_CLUSTER_INTERFACE: eth0
+      VAULT_REDIRECT_INTERFACE: eth0
+
+    # Secrets supplémentaires
+    extraSecretEnvironmentVars:
+      - envName: VAULT_LICENSE
+        secretName: vault-enterprise-license
+        secretKey: license
+        optional: true
+
+    # Configuration des volumes additionnels
+    extraVolumes:
+      - type: secret
+        name: vault-tls
+        path: /vault/userconfig
+      - type: secret
+        name: vault-ca
+        path: /vault/userconfig
+
+    # Configuration de persistance
+    dataStorage:
+      enabled: true
+      size: 100Gi
+      storageClass: local-path
+      accessMode: ReadWriteOnce
+
+    auditStorage:
+      enabled: true
+      size: 50Gi
+      storageClass: local-path
+      accessMode: ReadWriteOnce
+
+    # Affinité pour la haute disponibilité
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: vault
+                app.kubernetes.io/instance: vault
+            topologyKey: kubernetes.io/hostname
+
+    # Tolérations pour les nœuds spécialisés
+    tolerations: []
+
+  # =============================================================================
+  # Configuration de l'interface utilisateur
+  # =============================================================================
+  ui:
+    enabled: true
+    serviceType: ClusterIP
+    externalPort: 8200
+
+  # =============================================================================
+  # Configuration du client Vault
+  # =============================================================================
+  injector:
+    enabled: false  # On utilise Vault Secrets Operator à la place
+
+  # =============================================================================
+  # Configuration CSI (Container Storage Interface)
+  # =============================================================================
+  csi:
+    enabled: true
+
+    image:
+      repository: hashicorp/vault-csi-provider
+      tag: "1.4.0"
+      pullPolicy: IfNotPresent
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+    # Configuration de sécurité CSI
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+    # Volume pour les sockets Unix
+    volumes:
+      - name: mountpoint-dir
+        hostPath:
+          path: /var/lib/kubelet/pods
+          type: DirectoryOrCreate
+
+    volumeMounts:
+      - name: mountpoint-dir
+        mountPath: /var/lib/kubelet/pods
+
+  # =============================================================================
+  # Configuration du Vault Secrets Operator
+  # =============================================================================
+  secretsOperator:
+    enabled: true
+
+    image:
+      repository: hashicorp/vault-secrets-operator
+      tag: "0.4.3"
+      pullPolicy: IfNotPresent
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+    # Configuration RBAC
+    rbac:
+      create: true
+
+# =============================================================================
+# Configuration avancée pour environnement de production
+# =============================================================================
+
+# Configuration de l'initialisation automatique
+vaultInit:
+  enabled: true
+
+  # Configuration des clés de scellement
+  secretShares: 5
+  secretThreshold: 3
+
+  # Stockage des clés dans Kubernetes secrets
+  recovery:
+    keys: vault-unseal-keys
+    rootToken: vault-root-token
+
+# Configuration des politiques d'accès
+policies:
+  # Politique pour les administrateurs
+  admin:
+    enabled: true
+    policy: |
+      # Accès complet à tous les chemins
+      path "*" {
+        capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+      }
+
+  # Politique pour les développeurs
+  developer:
+    enabled: true
+    policy: |
+      # Accès aux secrets de développement
+      path "secret/data/dev/*" {
+        capabilities = ["create", "read", "update", "delete", "list"]
+      }
+
+      # Lecture seule pour les secrets partagés
+      path "secret/data/shared/*" {
+        capabilities = ["read", "list"]
+      }
+
+      # Accès aux certificats de développement
+      path "pki_dev/issue/developer" {
+        capabilities = ["create", "update"]
+      }
+
+  # Politique pour la production
+  production:
+    enabled: true
+    policy: |
+      # Accès aux secrets de production (lecture seule pour la plupart)
+      path "secret/data/prod/*" {
+        capabilities = ["read", "list"]
+      }
+
+      # Accès aux certificats de production
+      path "pki_prod/issue/production" {
+        capabilities = ["create", "update"]
+      }
+
+  # Politique pour les applications
+  application:
+    enabled: true
+    policy: |
+      # Accès aux secrets spécifiques aux applications
+      path "secret/data/app/{{identity.entity.name}}/*" {
+        capabilities = ["read", "list"]
+      }
+
+      # Accès au transit pour chiffrement
+      path "transit/encrypt/{{identity.entity.name}}" {
+        capabilities = ["update"]
+      }
+
+      path "transit/decrypt/{{identity.entity.name}}" {
+        capabilities = ["update"]
+      }
+
+  # Politique pour CI/CD
+  cicd:
+    enabled: true
+    policy: |
+      # Accès aux secrets de déploiement
+      path "secret/data/cicd/*" {
+        capabilities = ["read", "list"]
+      }
+
+      # Accès aux secrets d'application pour déploiement
+      path "secret/data/app/*/deploy" {
+        capabilities = ["read", "list"]
+      }
+
+# Configuration des méthodes d'authentification
+auth:
+  # Authentification Kubernetes
+  kubernetes:
+    enabled: true
+    config:
+      kubernetes_host: "https://kubernetes.default.svc"
+      kubernetes_ca_cert: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+      token_reviewer_jwt: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+  # Authentification OIDC avec Keycloak
+  oidc:
+    enabled: true
+    config:
+      oidc_discovery_url: "https://auth.clementpnn.com/realms/infrastructure"
+      oidc_client_id: "vault"
+      oidc_client_secret: "vault-oidc-secret"
+      default_role: "employee"
+      bound_issuer: "https://auth.clementpnn.com/realms/infrastructure"
+
+    roles:
+      admin:
+        bound_audiences: "vault"
+        bound_subject: ""
+        bound_claims:
+          groups: ["vault-admins"]
+        user_claim: "email"
+        groups_claim: "groups"
+        policies: ["admin"]
+        ttl: "1h"
+        max_ttl: "8h"
+
+      developer:
+        bound_audiences: "vault"
+        bound_claims:
+          groups: ["developers"]
+        user_claim: "email"
+        groups_claim: "groups"
+        policies: ["developer"]
+        ttl: "4h"
+        max_ttl: "8h"
+
+      production:
+        bound_audiences: "vault"
+        bound_claims:
+          groups: ["production-team"]
+        user_claim: "email"
+        groups_claim: "groups"
+        policies: ["production"]
+        ttl: "2h"
+        max_ttl: "4h"
+
+  # Authentification par nom d'utilisateur/mot de passe (pour certains cas)
+  userpass:
+    enabled: true
+    users:
+      emergency:
+        password: ""  # Sera configuré via secret
+        policies: ["admin"]
+
+# Configuration des moteurs de secrets
+engines:
+  # Moteur KV v2 pour secrets statiques
+  kv:
+    enabled: true
+    paths:
+      - path: "secret"
+        type: "kv"
+        description: "Secrets génériques"
+        options:
+          version: 2
+          max_versions: 10
+          cas_required: false
+          delete_version_after: "0s"
+
+  # Moteur PKI pour certificats
+  pki:
+    enabled: true
+    engines:
+      # PKI racine
+      root:
+        path: "pki_root"
+        description: "PKI Certificate Authority Root"
+        config:
+          max_lease_ttl: "8760h"  # 1 an
+
+        # Configuration de l'AC racine
+        ca:
+          common_name: "Infrastructure Clement Root CA"
+          ttl: "8760h"
+          key_type: "rsa"
+          key_bits: 4096
+
+          # Extensions X.509
+          ou: ["Infrastructure"]
+          organization: ["Clement Enterprise"]
+          country: ["FR"]
+          locality: ["Paris"]
+          province: ["Ile-de-France"]
+
+        roles:
+          intermediate:
+            allowed_domains: ["clementpnn.com", "clementpnn.local"]
+            allow_subdomains: true
+            allow_wildcard_certificates: true
+            max_ttl: "720h"  # 30 jours
+
+      # PKI intermédiaire pour production
+      prod:
+        path: "pki_prod"
+        description: "PKI Production Certificates"
+        config:
+          max_lease_ttl: "720h"  # 30 jours
+
+        # Certificat intermédiaire
+        intermediate:
+          common_name: "Infrastructure Clement Intermediate CA - Production"
+          ttl: "720h"
+
+        roles:
+          production:
+            allowed_domains: ["clementpnn.com"]
+            allow_subdomains: true
+            allow_wildcard_certificates: false
+            max_ttl: "168h"  # 7 jours
+            key_type: "rsa"
+            key_bits: 2048
+
+          services:
+            allowed_domains: ["svc.cluster.local", "clementpnn.local"]
+            allow_subdomains: true
+            allow_wildcard_certificates: true
+            max_ttl: "720h"  # 30 jours
+
+      # PKI pour développement
+      dev:
+        path: "pki_dev"
+        description: "PKI Development Certificates"
+        config:
+          max_lease_ttl: "168h"  # 7 jours
+
+        roles:
+          developer:
+            allowed_domains: ["dev.clementpnn.com", "test.clementpnn.com"]
+            allow_subdomains: true
+            allow_wildcard_certificates: true
+            max_ttl: "168h"
+            key_type: "rsa"
+            key_bits: 2048
+
+  # Moteur Database pour credentials dynamiques
+  database:
+    enabled: true
+    connections:
+      # PostgreSQL pour applications
+      postgresql:
+        plugin_name: "postgresql-database-plugin"
+        connection_url: "postgresql://{{username}}:{{password}}@postgresql.database:5432/postgres?sslmode=require"
+        allowed_roles: ["readonly", "readwrite", "admin"]
+        username: "vault"
+        password: ""  # Configuré via secret
+
+    roles:
+      readonly:
+        db_name: "postgresql"
+        creation_statements: |
+          CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';
+          GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{{name}}";
+        default_ttl: "1h"
+        max_ttl: "24h"
+
+      readwrite:
+        db_name: "postgresql"
+        creation_statements: |
+          CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{{name}}";
+        default_ttl: "4h"
+        max_ttl: "24h"
+
+      admin:
+        db_name: "postgresql"
+        creation_statements: |
+          CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}' SUPERUSER;
+        default_ttl: "30m"
+        max_ttl: "2h"
+
+  # Moteur Transit pour chiffrement en tant que service
+  transit:
+    enabled: true
+    keys:
+      # Clé principale pour applications
+      app-key:
+        type: "aes256-gcm96"
+        deletion_allowed: false
+        exportable: false
+        allow_plaintext_backup: false
+
+      # Clé pour chiffrement des données sensibles
+      sensitive-data:
+        type: "chacha20-poly1305"
+        deletion_allowed: false
+        exportable: false
+        allow_plaintext_backup: false
+
+      # Clé pour signatures
+      signing-key:
+        type: "ecdsa-p384"
+        deletion_allowed: false
+        exportable: false
+        allow_plaintext_backup: false
+
+# Configuration de l'audit
+audit:
+  enabled: true
+  devices:
+    file:
+      file_path: "/vault/audit/vault-audit.log"
+      log_raw: false
+      hmac_accessor: true
+      mode: "0600"
+      format: "json"
+
+    syslog:
+      enabled: true
+      facility: "AUTH"
+      tag: "vault"
+      log_raw: false
+      hmac_accessor: true
+      format: "json"
+
+# Configuration du monitoring
+monitoring:
+  # Métriques Prometheus
+  prometheus:
+    enabled: true
+
+    # ServiceMonitor
+    serviceMonitor:
+      enabled: true
+      labels:
+        app.kubernetes.io/part-of: kube-prometheus-stack
+      interval: 30s
+      path: /v1/sys/metrics
+      params:
+        format: ["prometheus"]
+
+  # Alertes Prometheus
+  prometheusRules:
+    enabled: true
+    rules:
+      - name: vault-health
+        rules:
+          - alert: VaultSealed
+            expr: vault_core_unsealed == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Vault is sealed"
+              description: "Vault instance {{ $labels.instance }} is sealed"
+
+          - alert: VaultDown
+            expr: up{job="vault"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Vault is down"
+              description: "Vault instance {{ $labels.instance }} is down"
+
+          - alert: VaultHighMemory
+            expr: vault_runtime_sys_bytes > 3000000000  # 3GB
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Vault high memory usage"
+              description: "Vault memory usage is {{ $value | humanizeBytes }}"
+
+          - alert: VaultTokenExpiration
+            expr: vault_token_count_by_ttl{creation_ttl=~"[0-9]+h"} > 1000
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High number of tokens expiring soon"
+
+# Configuration de sauvegarde
+backup:
+  enabled: true
+
+  # Sauvegarde Raft snapshots
+  raft:
+    schedule: "0 2 * * *"  # Tous les jours à 2h
+    retention: "30d"
+
+    # Configuration du stockage des snapshots
+    storage:
+      type: "s3"  # ou "local" pour stockage local
+      config:
+        bucket: "vault-backups"
+        region: "eu-west-1"
+        access_key: ""  # Configuré via secret
+        secret_key: ""  # Configuré via secret
+
+  # Sauvegarde des politiques et configuration
+  config:
+    schedule: "0 3 * * *"  # Tous les jours à 3h
+    retention: "90d"
+
+# Configuration de la récupération d'urgence
+disaster_recovery:
+  enabled: true
+
+  # Réplication entre clusters (Enterprise)
+  replication:
+    enabled: false  # Nécessite Vault Enterprise
+    mode: "dr"  # disaster recovery
+
+  # Scripts de récupération
+  recovery_scripts:
+    enabled: true
+
+# Configuration de développement/debug (désactivé en production)
+development:
+  enabled: false
+
+# Configuration des tests
+testing:
+  enabled: false
+
+# Configuration de sécurité avancée
+security:
+  # Rotation automatique des clés
+  key_rotation:
+    enabled: true
+    schedule: "0 4 1 * *"  # Le 1er de chaque mois à 4h
+
+  # Politique de mots de passe
+  password_policy:
+    enabled: true
+    min_length: 12
+    require_uppercase: true
+    require_lowercase: true
+    require_numbers: true
+    require_symbols: true
+
+  # Configuration MFA (Enterprise)
+  mfa:
+    enabled: false  # Nécessite Vault Enterprise
+    methods:
+      - type: "totp"
+        name: "totp_mfa"

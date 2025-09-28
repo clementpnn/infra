@@ -1,0 +1,65 @@
+apiVersion: v2
+name: coraza-wrapper
+description: Chart de production pour Coraza WAF - Web Application Firewall moderne
+type: application
+version: 0.1.0
+appVersion: "3.0.1"
+
+dependencies:
+  - name: coraza-proxy
+    repository: "file://./charts/coraza-proxy"
+    version: "0.1.0"
+    condition: coraza.enabled
+
+maintainers:
+  - name: "clement"
+    email: "contact@clementpnn.com"
+
+keywords:
+  - waf
+  - security
+  - coraza
+  - web-application-firewall
+  - owasp
+  - modsecurity
+  - protection
+  - proxy
+
+sources:
+  - https://github.com/corazawaf/coraza
+  - https://github.com/corazawaf/coraza-proxy-wasm
+  - https://corazawaf.org
+
+home: https://corazawaf.org
+
+annotations:
+  category: Security
+  licenses: Apache-2.0
+  artifacthub.io/operator: "false"
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/containsSecurityUpdates: "true"
+  artifacthub.io/images: |
+    - name: coraza-proxy
+      image: corazawaf/coraza-proxy:v3.0.1
+    - name: coraza-exporter
+      image: corazawaf/prometheus-exporter:v0.1.0
+  artifacthub.io/crds: |
+    - kind: CorazaPolicy
+      version: v1
+      name: coraza-policies.security.coraza.org
+      displayName: Coraza Security Policy
+      description: Define WAF security policies for Coraza
+    - kind: CorazaRule
+      version: v1
+      name: coraza-rules.security.coraza.org
+      displayName: Coraza WAF Rule
+      description: Define custom WAF rules for Coraza
+  artifacthub.io/changes: |
+    - kind: added
+      description: Production-ready Coraza WAF deployment
+    - kind: added
+      description: OWASP Core Rule Set integration
+    - kind: added
+      description: Prometheus metrics and monitoring
+    - kind: added
+      description: Traefik middleware integration

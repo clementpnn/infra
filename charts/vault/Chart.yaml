@@ -1,0 +1,96 @@
+apiVersion: v2
+name: vault-wrapper
+description: Chart de production pour HashiCorp Vault - Secrets Management Enterprise
+type: application
+version: 0.1.0
+appVersion: "1.15.4"
+
+dependencies:
+  - name: vault
+    repository: "https://helm.releases.hashicorp.com"
+    version: "0.27.0"
+    condition: vault.enabled
+
+maintainers:
+  - name: "clement"
+    email: "contact@clementpnn.com"
+
+keywords:
+  - vault
+  - secrets
+  - hashicorp
+  - security
+  - encryption
+  - pki
+  - kms
+  - secret-management
+  - enterprise
+  - high-availability
+
+sources:
+  - https://github.com/hashicorp/vault
+  - https://github.com/hashicorp/vault-helm
+  - https://www.vaultproject.io
+
+home: https://www.vaultproject.io
+
+annotations:
+  category: Security
+  licenses: MPL-2.0
+  artifacthub.io/operator: "false"
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/containsSecurityUpdates: "true"
+  artifacthub.io/images: |
+    - name: vault
+      image: hashicorp/vault:1.15.4
+    - name: vault-k8s
+      image: hashicorp/vault-k8s:1.4.0
+  artifacthub.io/crds: |
+    - kind: VaultConnection
+      version: v1beta1
+      name: vaultconnections.secrets.hashicorp.com
+      displayName: Vault Connection
+      description: Configure connections to Vault for secret synchronization
+    - kind: VaultAuth
+      version: v1beta1
+      name: vaultauths.secrets.hashicorp.com
+      displayName: Vault Authentication
+      description: Configure Vault authentication methods
+    - kind: VaultStaticSecret
+      version: v1beta1
+      name: vaultstaticsecrets.secrets.hashicorp.com
+      displayName: Vault Static Secret
+      description: Sync static secrets from Vault to Kubernetes
+    - kind: VaultDynamicSecret
+      version: v1beta1
+      name: vaultdynamicsecrets.secrets.hashicorp.com
+      displayName: Vault Dynamic Secret
+      description: Generate dynamic secrets using Vault
+    - kind: VaultPKISecret
+      version: v1beta1
+      name: vaultpkisecrets.secrets.hashicorp.com
+      displayName: Vault PKI Secret
+      description: Generate PKI certificates using Vault
+  artifacthub.io/changes: |
+    - kind: added
+      description: Production-ready HashiCorp Vault deployment with HA
+    - kind: added
+      description: Integrated Raft storage backend for high availability
+    - kind: added
+      description: Vault Secrets Operator for Kubernetes integration
+    - kind: added
+      description: Auto-unseal with Kubernetes secrets
+    - kind: added
+      description: PKI engine for certificate management
+    - kind: added
+      description: Database secrets engine for dynamic credentials
+    - kind: added
+      description: Transit engine for encryption as a service
+    - kind: added
+      description: Comprehensive monitoring and alerting
+    - kind: added
+      description: Enterprise-grade backup and disaster recovery
+  artifacthub.io/recommendations: |
+    - url: https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
+    - url: https://artifacthub.io/packages/helm/grafana/loki-stack
+    - url: https://artifacthub.io/packages/helm/jetstack/cert-manager

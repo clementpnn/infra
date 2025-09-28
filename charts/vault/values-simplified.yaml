@@ -1,0 +1,291 @@
+# =============================================================================
+# Configuration Vault Simplifiée pour Équipe de Développement
+# =============================================================================
+#
+# Version simplifiée de Vault focalisée sur vos besoins réels :
+# - Stockage centralisé des secrets d'équipe
+# - Interface web pour gestion facile
+# - Intégration Kubernetes basique
+# - Configuration single-node (pas de HA complexe)
+# - KV store simple pour secrets applicatifs
+#
+# =============================================================================
+
+vault:
+  # =============================================================================
+  # Configuration globale simplifiée
+  # =============================================================================
+  global:
+    enabled: true
+    tlsDisable: false
+
+  # =============================================================================
+  # Configuration serveur - Single node
+  # =============================================================================
+  server:
+    enabled: true
+
+    # Single instance (pas de HA pour simplifier)
+    replicas: 1
+
+    # Ressources adaptées à une équipe de dev
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+    # Image stable
+    image:
+      repository: hashicorp/vault
+      tag: "1.15.4"
+      pullPolicy: IfNotPresent
+
+    # Configuration simplifiée
+    dataStorage:
+      enabled: true
+      size: 10Gi
+      storageClass: local-path
+      accessMode: ReadWriteOnce
+
+    # Mode développement avec interface web
+    dev:
+      enabled: false  # Production mode mais simplifié
+      devRootToken: ""
+
+    # Configuration Vault
+    extraEnvironmentVars:
+      VAULT_ADDR: "https://vault.clementpnn.com"
+      VAULT_API_ADDR: "https://vault.clementpnn.com"
+      VAULT_UI: "true"
+
+    # Configuration basique
+    config: |
+      ui = true
+
+      listener "tcp" {
+        address = "0.0.0.0:8200"
+        tls_disable = false
+        tls_cert_file = "/vault/tls/tls.crt"
+        tls_key_file = "/vault/tls/tls.key"
+      }
+
+      storage "file" {
+        path = "/vault/data"
+      }
+
+      # Métriques pour Prometheus
+      telemetry {
+        prometheus_retention_time = "24h"
+        disable_hostname = true
+      }
+
+    # Volumes pour TLS
+    volumes:
+      - name: vault-tls
+        secret:
+          secretName: vault-tls
+
+    volumeMounts:
+      - name: vault-tls
+        mountPath: /vault/tls
+        readOnly: true
+
+    # Service configuration
+    service:
+      enabled: true
+      type: ClusterIP
+      port: 8200
+      targetPort: 8200
+
+    # Sondes de santé simplifiées
+    readinessProbe:
+      enabled: true
+      path: /v1/sys/health?standbyok=true
+      initialDelaySeconds: 30
+      periodSeconds: 10
+
+    livenessProbe:
+      enabled: true
+      path: /v1/sys/health?standbyok=true
+      initialDelaySeconds: 60
+      periodSeconds: 30
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 100
+      runAsGroup: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: false
+
+  # =============================================================================
+  # Pas d'injector - Utilisation manuelle des secrets
+  # =============================================================================
+  injector:
+    enabled: false
+
+  # =============================================================================
+  # Pas de CSI pour simplifier
+  # =============================================================================
+  csi:
+    enabled: false
+
+  # =============================================================================
+  # UI activée pour gestion facile
+  # =============================================================================
+  ui:
+    enabled: true
+
+# =============================================================================
+# Configuration Traefik pour exposition
+# =============================================================================
+traefik:
+  ingressRoute:
+    enabled: true
+    host: vault.clementpnn.com
+    tls:
+      enabled: true
+      secretName: vault-tls
+
+# =============================================================================
+# Scripts d'initialisation simplifiés
+# =============================================================================
+init:
+  # Script de setup initial
+  enabled: true
+
+  # Policies basiques pour l'équipe
+  policies:
+    # Policy pour les développeurs
+    developer: |
+      path "secret/data/dev/*" {
+        capabilities = ["create", "read", "update", "delete", "list"]
+      }
+      path "secret/metadata/dev/*" {
+        capabilities = ["list"]
+      }
+
+    # Policy pour les secrets de production (lecture seule)
+    readonly: |
+      path "secret/data/prod/*" {
+        capabilities = ["read", "list"]
+      }
+      path "secret/metadata/prod/*" {
+        capabilities = ["list"]
+      }
+
+  # Secrets de base à créer
+  initialSecrets:
+    enabled: true
+    secrets:
+      # Secrets de développement
+      - path: "secret/dev/database"
+        data:
+          username: "dev_user"
+          password: "dev_password"
+
+      - path: "secret/dev/api-keys"
+        data:
+          slack: "xoxb-dev-key"
+          github: "ghp_dev_token"
+
+# =============================================================================
+# Monitoring simplifié
+# =============================================================================
+monitoring:
+  # ServiceMonitor pour Prometheus
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    labels:
+      app.kubernetes.io/part-of: kube-prometheus-stack
+    interval: 30s
+
+  # Métriques basiques
+  prometheusRule:
+    enabled: true
+    namespace: monitoring
+    labels:
+      app.kubernetes.io/part-of: kube-prometheus-stack
+    rules:
+      - alert: VaultDown
+        expr: up{job="vault"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault is down"
+          description: "Vault has been down for more than 2 minutes"
+
+      - alert: VaultSealed
+        expr: vault_core_unsealed == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault is sealed"
+          description: "Vault is sealed and needs manual intervention"
+
+# =============================================================================
+# Backup simplifié
+# =============================================================================
+backup:
+  enabled: true
+  schedule: "0 3 * * *"  # 3h du matin
+  retention: "7d"
+
+  # Script de backup des données Vault
+  script: |
+    #!/bin/bash
+    VAULT_ADDR=http://localhost:8200
+    BACKUP_DIR="/backup/$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+
+    # Backup des secrets KV
+    vault kv get -format=json secret/ > "$BACKUP_DIR/secrets.json" || true
+
+    # Backup des policies
+    vault policy list | while read policy; do
+      vault policy read "$policy" > "$BACKUP_DIR/policy_$policy.hcl" || true
+    done
+
+    # Backup des auth methods
+    vault auth list -format=json > "$BACKUP_DIR/auth_methods.json" || true
+
+# =============================================================================
+# Configuration des secrets externes
+# =============================================================================
+secrets:
+  # Certificat TLS (généré par cert-manager)
+  tls:
+    enabled: true
+    secretName: vault-tls
+
+  # Token d'initialisation
+  init:
+    enabled: true
+    secretName: vault-init
+
+# =============================================================================
+# RBAC simplifié
+# =============================================================================
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: vault
+  annotations:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: secrets-management

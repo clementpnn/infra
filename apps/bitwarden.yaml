@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bitwarden
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: bitwarden
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/component: password-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "https://github.com/clementpnn/infra.git"
+    path: charts/bitwarden
+    targetRevision: HEAD
+    helm:
+      valueFiles:
+        - values.yaml
+      parameters: []
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: secrets
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10
+  info:
+    - name: "Description"
+      value: "Bitwarden password manager production deployment"
+    - name: "Owner"
+      value: "contact@clementpnn.com"
+    - name: "Documentation"
+      value: "https://bitwarden.com/help/"

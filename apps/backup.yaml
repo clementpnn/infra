@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backup
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: backup
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/component: backup
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "https://github.com/clementpnn/infra.git"
+    path: charts/backup
+    targetRevision: HEAD
+    helm:
+      valueFiles:
+        - values.yaml
+      parameters: []
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: backup
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10
+  info:
+    - name: "Description"
+      value: "Infrastructure backup system with automated S3 uploads and monitoring"
+    - name: "Owner"
+      value: "contact@clementpnn.com"
+    - name: "Documentation"
+      value: "https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/"

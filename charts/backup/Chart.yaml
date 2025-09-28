@@ -1,0 +1,50 @@
+apiVersion: v2
+name: backup
+description: Chart Helm pour système de backup automatisé de l'infrastructure avec upload S3 et monitoring
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - backup
+  - infrastructure
+  - s3
+  - kubernetes
+  - cronjob
+  - monitoring
+  - disaster-recovery
+
+home: https://github.com/clementpnn/infra
+
+sources:
+  - https://github.com/clementpnn/infra
+  - https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/
+
+maintainers:
+  - name: Clément Pennec
+    email: contact@clementpnn.com
+    url: https://clementpnn.com
+
+annotations:
+  category: Infrastructure
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial release of automated infrastructure backup system
+  artifacthub.io/images: |
+    - name: aws-cli
+      image: amazon/aws-cli:2.15.17
+    - name: kubectl
+      image: bitnami/kubectl:1.29.1
+  artifacthub.io/license: MIT
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://github.com/clementpnn/infra/blob/main/docs/backup.md
+    - name: Source Code
+      url: https://github.com/clementpnn/infra/tree/main/charts/backup
+  artifacthub.io/maintainers: |
+    - name: Clément Pennec
+      email: contact@clementpnn.com
+  artifacthub.io/operator: false
+  artifacthub.io/prerelease: false
+  artifacthub.io/recommendations: |
+    - url: https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack

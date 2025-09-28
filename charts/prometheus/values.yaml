@@ -1,0 +1,546 @@
+# =============================================================================
+# Configuration Production pour Prometheus Stack
+# =============================================================================
+#
+# Stack complète d'observabilité incluant :
+# - Prometheus (collecte de métriques)
+# - Grafana (visualisation)
+# - AlertManager (gestion des alertes)
+# - Node Exporter (métriques système)
+# - Kube State Metrics (métriques Kubernetes)
+#
+# Configuration optimisée pour production avec :
+# - Haute disponibilité
+# - Persistence des données
+# - Sécurité renforcée
+# - Intégration Traefik/SSL
+# - Monitoring de l'infrastructure existante
+#
+# =============================================================================
+
+kube-prometheus-stack:
+  # =============================================================================
+  # Configuration globale
+  # =============================================================================
+  nameOverride: "prometheus"
+  fullnameOverride: "prometheus"
+
+  # Configuration des CRDs
+  crds:
+    enabled: true
+
+  # =============================================================================
+  # Configuration Prometheus Server
+  # =============================================================================
+  prometheus:
+    enabled: true
+
+    # Configuration du service
+    service:
+      port: 9090
+      targetPort: 9090
+      type: ClusterIP
+
+    # Configuration des ingress (désactivé - on utilise Traefik)
+    ingress:
+      enabled: false
+
+    # Configuration Prometheus
+    prometheusSpec:
+      # Réplication pour haute disponibilité
+      replicas: 2
+
+      # Configuration de rétention
+      retention: 30d
+      retentionSize: 50GB
+
+      # Configuration des ressources
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+
+      # Configuration du stockage persistant
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: local-path
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 100Gi
+
+      # Configuration de sécurité
+      securityContext:
+        runAsGroup: 2000
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Configuration des conteneurs
+      containers:
+        - name: prometheus
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+
+      # Configuration de découverte des services
+      serviceMonitorSelectorNilUsesHelmValues: false
+      ruleSelectorNilUsesHelmValues: false
+      probeSelectorNilUsesHelmValues: false
+
+      # Configuration des règles d'alerte
+      ruleSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+
+      # Configuration des ServiceMonitors
+      serviceMonitorSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+
+      # Configuration additionnelle
+      additionalScrapeConfigs: []
+
+      # Configuration de l'évaluation des règles
+      evaluationInterval: 30s
+      scrapeInterval: 30s
+
+      # Configuration des alertes
+      alerting:
+        alertmanagers:
+          - namespace: monitoring
+            name: prometheus-alertmanager
+            port: web
+
+  # =============================================================================
+  # Configuration AlertManager
+  # =============================================================================
+  alertmanager:
+    enabled: true
+
+    # Configuration du service
+    service:
+      port: 9093
+      targetPort: 9093
+      type: ClusterIP
+
+    # Configuration des ingress (désactivé - on utilise Traefik)
+    ingress:
+      enabled: false
+
+    # Configuration AlertManager
+    alertmanagerSpec:
+      # Réplication pour haute disponibilité
+      replicas: 2
+
+      # Configuration des ressources
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+      # Configuration du stockage
+      storage:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: local-path
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 5Gi
+
+      # Configuration de sécurité
+      securityContext:
+        runAsGroup: 2000
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Configuration des conteneurs
+      containers:
+        - name: alertmanager
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+
+  # =============================================================================
+  # Configuration Grafana
+  # =============================================================================
+  grafana:
+    enabled: true
+
+    # Configuration des ressources
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+    # Configuration de l'admin
+    adminUser: admin
+    adminPassword: ""  # Sera configuré via secret
+
+    # Configuration des ingress (désactivé - on utilise Traefik)
+    ingress:
+      enabled: false
+
+    # Configuration du service
+    service:
+      port: 80
+      targetPort: 3000
+      type: ClusterIP
+
+    # Configuration de la persistence
+    persistence:
+      enabled: true
+      storageClassName: local-path
+      size: 10Gi
+      accessModes:
+        - ReadWriteOnce
+
+    # Configuration des plugins
+    plugins:
+      - grafana-piechart-panel
+      - grafana-worldmap-panel
+      - grafana-clock-panel
+      - grafana-simple-json-datasource
+      - vonage-status-panel
+      - btplc-status-dot-panel
+
+    # Configuration des dashboards par défaut
+    defaultDashboardsEnabled: true
+    defaultDashboardsTimezone: "Europe/Paris"
+
+    # Configuration des datasources
+    datasources:
+      datasources.yaml:
+        apiVersion: 1
+        datasources:
+          - name: Prometheus
+            type: prometheus
+            url: http://prometheus-prometheus:9090
+            access: proxy
+            isDefault: true
+            editable: true
+          - name: Loki
+            type: loki
+            url: http://loki-gateway:80
+            access: proxy
+            editable: true
+            jsonData:
+              maxLines: 1000
+
+    # Configuration des dashboards additionnels
+    dashboardProviders:
+      dashboardproviders.yaml:
+        apiVersion: 1
+        providers:
+          - name: 'default'
+            orgId: 1
+            folder: ''
+            type: file
+            disableDeletion: false
+            editable: true
+            options:
+              path: /var/lib/grafana/dashboards/default
+          - name: 'infrastructure'
+            orgId: 1
+            folder: 'Infrastructure'
+            type: file
+            disableDeletion: false
+            editable: true
+            options:
+              path: /var/lib/grafana/dashboards/infrastructure
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 472
+      runAsGroup: 472
+      fsGroup: 472
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: false
+
+    # Configuration Grafana
+    grafana.ini:
+      server:
+        protocol: http
+        http_port: 3000
+        domain: grafana.clementpnn.com
+        root_url: "https://grafana.clementpnn.com"
+        serve_from_sub_path: false
+      security:
+        admin_user: admin
+        cookie_secure: true
+        cookie_samesite: strict
+        strict_transport_security: true
+        content_type_protection: true
+        x_content_type_options: nosniff
+        x_xss_protection: true
+      auth:
+        disable_login_form: false
+        disable_signout_menu: false
+      auth.anonymous:
+        enabled: false
+      log:
+        mode: console
+        level: info
+      analytics:
+        reporting_enabled: false
+        check_for_updates: false
+      users:
+        allow_sign_up: false
+        auto_assign_org: true
+        auto_assign_org_role: Viewer
+
+  # =============================================================================
+  # Configuration Node Exporter
+  # =============================================================================
+  nodeExporter:
+    enabled: true
+
+    # Configuration des ressources
+    resources:
+      requests:
+        cpu: 50m
+        memory: 30Mi
+      limits:
+        cpu: 200m
+        memory: 100Mi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+  # =============================================================================
+  # Configuration Kube State Metrics
+  # =============================================================================
+  kubeStateMetrics:
+    enabled: true
+
+    # Configuration des ressources
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+  # =============================================================================
+  # Configuration des ServiceMonitors personnalisés
+  # =============================================================================
+  additionalServiceMonitors:
+    # Monitoring Traefik
+    - name: traefik
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+      namespaceSelector:
+        matchNames:
+          - traefik
+      endpoints:
+        - port: metrics
+          interval: 30s
+          path: /metrics
+
+    # Monitoring Keycloak
+    - name: keycloak
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: keycloak
+      namespaceSelector:
+        matchNames:
+          - keycloak
+      endpoints:
+        - port: http
+          interval: 30s
+          path: /metrics
+
+    # Monitoring ArgoCD
+    - name: argocd-server
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: argocd-server
+      namespaceSelector:
+        matchNames:
+          - argocd
+      endpoints:
+        - port: metrics
+          interval: 30s
+          path: /metrics
+
+    # Monitoring GitLab
+    - name: gitlab
+      selector:
+        matchLabels:
+          app: gitlab
+      namespaceSelector:
+        matchNames:
+          - gitlab
+      endpoints:
+        - port: http
+          interval: 30s
+          path: /metrics
+
+  # =============================================================================
+  # Configuration des PrometheusRules (Alertes)
+  # =============================================================================
+  additionalPrometheusRules:
+    - name: infrastructure-alerts
+      groups:
+        - name: infrastructure
+          rules:
+            # Alerte pour les pods en erreur
+            - alert: PodCrashLooping
+              expr: increase(kube_pod_container_status_restarts_total[15m]) > 2
+              for: 0m
+              labels:
+                severity: warning
+              annotations:
+                summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} crash looping"
+                description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last 15 minutes"
+
+            # Alerte pour l'utilisation disque
+            - alert: NodeDiskSpaceUsage
+              expr: (1 - (node_filesystem_free_bytes / node_filesystem_size_bytes)) * 100 > 85
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "Node disk space usage is above 85%"
+                description: "Disk space usage on {{ $labels.instance }} is {{ $value }}%"
+
+            # Alerte pour l'utilisation mémoire
+            - alert: NodeMemoryUsage
+              expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+              for: 5m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Node memory usage is above 90%"
+                description: "Memory usage on {{ $labels.instance }} is {{ $value }}%"
+
+            # Alerte pour l'utilisation CPU
+            - alert: NodeCPUUsage
+              expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "Node CPU usage is above 85%"
+                description: "CPU usage on {{ $labels.instance }} is {{ $value }}%"
+
+            # Alerte pour les services down
+            - alert: ServiceDown
+              expr: up == 0
+              for: 1m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Service {{ $labels.job }} is down"
+                description: "Service {{ $labels.job }} on {{ $labels.instance }} has been down for more than 1 minute"
+
+  # =============================================================================
+  # Configuration RBAC
+  # =============================================================================
+  rbac:
+    create: true
+
+  # =============================================================================
+  # Configuration des ServiceAccounts
+  # =============================================================================
+  serviceAccount:
+    create: true
+    name: prometheus
+    annotations:
+      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/component: monitoring
+
+# =============================================================================
+# Configuration pour l'intégration Traefik (IngressRoute)
+# =============================================================================
+traefik:
+  ingressRoutes:
+    prometheus:
+      enabled: true
+      host: prometheus.clementpnn.com
+      tls:
+        secretName: prometheus-tls
+
+    grafana:
+      enabled: true
+      host: grafana.clementpnn.com
+      tls:
+        secretName: grafana-tls
+
+    alertmanager:
+      enabled: true
+      host: alertmanager.clementpnn.com
+      tls:
+        secretName: alertmanager-tls
+
+# =============================================================================
+# Configuration de sauvegarde (optionnel)
+# =============================================================================
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Tous les jours à 2h
+  retention: "30d"       # Conserver 30 jours
+
+# =============================================================================
+# Configuration des dashboards personnalisés
+# =============================================================================
+customDashboards:
+  enabled: true
+  # Les dashboards seront ajoutés via ConfigMaps

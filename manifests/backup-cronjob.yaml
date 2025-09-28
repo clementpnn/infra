@@ -1,0 +1,591 @@
+# =============================================================================
+# CronJob Kubernetes pour Backup Automatisé de l'Infrastructure
+# =============================================================================
+#
+# Ce CronJob automatise la sauvegarde quotidienne de l'infrastructure critique :
+# - Configurations ArgoCD, GitLab, Kubernetes
+# - Données GitLab (PostgreSQL + repositories Git)
+# - Charts Helm locaux
+# - Upload vers stockage S3 compatible
+# - Nettoyage automatique des anciennes sauvegardes
+# - Notifications Slack/Email en cas d'échec
+#
+# =============================================================================
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backup
+  labels:
+    app.kubernetes.io/name: backup
+    app.kubernetes.io/component: infrastructure
+    app.kubernetes.io/part-of: infrastructure
+
+---
+# ConfigMap avec la configuration de backup
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-config
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/component: config
+data:
+  backup.conf: |
+    # Configuration générale
+    BACKUP_TYPE="full"
+    RETENTION_DAYS="30"
+    VERBOSE="true"
+
+    # Configuration S3
+    S3_BUCKET="infra-backups-clementpnn"
+    S3_REGION="eu-west-3"
+    S3_PREFIX="production/"
+
+    # Namespaces à sauvegarder
+    NAMESPACE_ARGOCD="argocd"
+    NAMESPACE_GITLAB="gitlab"
+    NAMESPACE_MONITORING="monitoring"
+    NAMESPACE_SECRETS="secrets"
+    NAMESPACE_KEYCLOAK="keycloak"
+    NAMESPACE_TRAEFIK="traefik"
+
+    # Notification
+    SLACK_WEBHOOK_ENABLED="true"
+    EMAIL_ENABLED="true"
+    EMAIL_RECIPIENTS="contact@clementpnn.com"
+
+  backup-script.sh: |
+    #!/bin/bash
+
+    set -euo pipefail
+
+    # Chargement de la configuration
+    source /config/backup.conf
+
+    # Variables
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    BACKUP_NAME="infra-backup-${TIMESTAMP}"
+    LOCAL_BACKUP_DIR="/tmp/backups"
+
+    # Fonctions utilitaires
+    log_info() {
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] $1"
+    }
+
+    log_error() {
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $1" >&2
+    }
+
+    log_success() {
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] [SUCCESS] $1"
+    }
+
+    # Notification Slack
+    notify_slack() {
+        local message="$1"
+        local status="$2"
+        local color="good"
+
+        if [ "$status" = "error" ]; then
+            color="danger"
+        elif [ "$status" = "warning" ]; then
+            color="#ff9500"
+        fi
+
+        if [ "$SLACK_WEBHOOK_ENABLED" = "true" ] && [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+                --data "{\"attachments\":[{\"color\":\"$color\",\"title\":\"Infrastructure Backup - Production\",\"text\":\"$message\",\"footer\":\"Kubernetes Backup Job\",\"ts\":$(date +%s)}]}" \
+                "$SLACK_WEBHOOK_URL" || true
+        fi
+    }
+
+    # Nettoyage en cas d'erreur
+    cleanup_on_error() {
+        log_error "Erreur détectée, nettoyage en cours..."
+        rm -rf "$LOCAL_BACKUP_DIR/$BACKUP_NAME" || true
+        notify_slack "❌ Backup failed: $BACKUP_NAME" "error"
+        exit 1
+    }
+
+    # Piège pour nettoyage automatique
+    trap cleanup_on_error ERR
+
+    # Fonction principale
+    main() {
+        log_info "=== DÉBUT DU BACKUP AUTOMATISÉ ==="
+        log_info "Backup: $BACKUP_NAME"
+        log_info "Type: $BACKUP_TYPE"
+
+        # Créer les répertoires
+        mkdir -p "$LOCAL_BACKUP_DIR/$BACKUP_NAME"
+
+        # Backup des configurations ArgoCD
+        log_info "Backup ArgoCD..."
+        local argocd_dir="$LOCAL_BACKUP_DIR/$BACKUP_NAME/argocd"
+        mkdir -p "$argocd_dir"
+
+        kubectl get applications -n "$NAMESPACE_ARGOCD" -o yaml > "$argocd_dir/applications.yaml" || log_error "Échec backup applications ArgoCD"
+        kubectl get appprojects -n "$NAMESPACE_ARGOCD" -o yaml > "$argocd_dir/appprojects.yaml" || true
+        kubectl get configmaps -n "$NAMESPACE_ARGOCD" -o yaml > "$argocd_dir/configmaps.yaml" || true
+        kubectl get secrets -n "$NAMESPACE_ARGOCD" -o yaml > "$argocd_dir/secrets.yaml" || true
+
+        # Backup des configurations GitLab
+        log_info "Backup GitLab..."
+        local gitlab_dir="$LOCAL_BACKUP_DIR/$BACKUP_NAME/gitlab"
+        mkdir -p "$gitlab_dir"
+
+        kubectl get all -n "$NAMESPACE_GITLAB" -o yaml > "$gitlab_dir/resources.yaml" || true
+        kubectl get configmaps -n "$NAMESPACE_GITLAB" -o yaml > "$gitlab_dir/configmaps.yaml" || true
+        kubectl get secrets -n "$NAMESPACE_GITLAB" -o yaml > "$gitlab_dir/secrets.yaml" || true
+        kubectl get pvc -n "$NAMESPACE_GITLAB" -o yaml > "$gitlab_dir/pvc.yaml" || true
+
+        # Backup GitLab database
+        log_info "Backup base de données GitLab..."
+        local postgres_pod=$(kubectl get pods -n "$NAMESPACE_GITLAB" -l app=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [ -n "$postgres_pod" ]; then
+            kubectl exec -n "$NAMESPACE_GITLAB" "$postgres_pod" -- pg_dump -U postgres gitlabhq_production > "$gitlab_dir/gitlab_database.sql" || log_error "Échec backup base GitLab"
+        fi
+
+        # Backup des autres namespaces critiques
+        for ns in monitoring secrets keycloak traefik; do
+            log_info "Backup namespace $ns..."
+            local ns_dir="$LOCAL_BACKUP_DIR/$BACKUP_NAME/$ns"
+            mkdir -p "$ns_dir"
+
+            kubectl get all -n "$ns" -o yaml > "$ns_dir/resources.yaml" 2>/dev/null || true
+            kubectl get configmaps -n "$ns" -o yaml > "$ns_dir/configmaps.yaml" 2>/dev/null || true
+            kubectl get secrets -n "$ns" -o yaml > "$ns_dir/secrets.yaml" 2>/dev/null || true
+        done
+
+        # Backup des ressources cluster-wide
+        log_info "Backup ressources cluster..."
+        local cluster_dir="$LOCAL_BACKUP_DIR/$BACKUP_NAME/cluster"
+        mkdir -p "$cluster_dir"
+
+        kubectl get namespaces -o yaml > "$cluster_dir/namespaces.yaml"
+        kubectl get clusterroles -o yaml > "$cluster_dir/clusterroles.yaml"
+        kubectl get clusterrolebindings -o yaml > "$cluster_dir/clusterrolebindings.yaml"
+        kubectl get storageclasses -o yaml > "$cluster_dir/storageclasses.yaml"
+        kubectl get ingressclasses -o yaml > "$cluster_dir/ingressclasses.yaml" || true
+
+        # Créer un résumé
+        log_info "Création du résumé..."
+        cat > "$LOCAL_BACKUP_DIR/$BACKUP_NAME/backup_summary.txt" <<EOF
+    Infrastructure Backup Summary
+    ============================
+
+    Date: $(date)
+    Backup Name: $BACKUP_NAME
+    Cluster: $(kubectl config current-context)
+    Type: $BACKUP_TYPE
+
+    Namespaces sauvegardés:
+    - $NAMESPACE_ARGOCD
+    - $NAMESPACE_GITLAB
+    - $NAMESPACE_MONITORING
+    - $NAMESPACE_SECRETS
+    - $NAMESPACE_KEYCLOAK
+    - $NAMESPACE_TRAEFIK
+
+    Contenu:
+    $(find "$LOCAL_BACKUP_DIR/$BACKUP_NAME" -type f | wc -l) fichiers
+    Taille: $(du -sh "$LOCAL_BACKUP_DIR/$BACKUP_NAME" | cut -f1)
+    EOF
+
+        # Compression
+        log_info "Compression du backup..."
+        cd "$LOCAL_BACKUP_DIR"
+        tar -czf "${BACKUP_NAME}.tar.gz" "$BACKUP_NAME"
+        rm -rf "$BACKUP_NAME"
+
+        # Upload vers S3
+        log_info "Upload vers S3..."
+        aws s3 cp "${BACKUP_NAME}.tar.gz" "s3://${S3_BUCKET}/${S3_PREFIX}${BACKUP_NAME}.tar.gz" --region "$S3_REGION"
+
+        # Vérification de l'upload
+        if aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}${BACKUP_NAME}.tar.gz" --region "$S3_REGION" > /dev/null; then
+            log_success "Backup uploadé avec succès vers S3"
+            notify_slack "✅ Backup successful: $BACKUP_NAME ($(du -sh "${BACKUP_NAME}.tar.gz" | cut -f1))" "good"
+        else
+            log_error "Échec de l'upload S3"
+            notify_slack "⚠️ Backup completed but S3 upload failed: $BACKUP_NAME" "warning"
+        fi
+
+        # Nettoyage local
+        rm -f "${BACKUP_NAME}.tar.gz"
+
+        # Nettoyage des anciens backups S3
+        log_info "Nettoyage des anciens backups (rétention: $RETENTION_DAYS jours)..."
+        local cutoff_date=$(date -d "$RETENTION_DAYS days ago" +%s)
+
+        aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}" --region "$S3_REGION" | while read -r line; do
+            local file_date=$(echo "$line" | awk '{print $1 " " $2}')
+            local file_name=$(echo "$line" | awk '{print $4}')
+            local file_timestamp=$(date -d "$file_date" +%s 2>/dev/null || echo "0")
+
+            if [ "$file_timestamp" -lt "$cutoff_date" ] && [[ "$file_name" == *"infra-backup-"* ]]; then
+                log_info "Suppression ancien backup: $file_name"
+                aws s3 rm "s3://${S3_BUCKET}/${S3_PREFIX}${file_name}" --region "$S3_REGION" || true
+            fi
+        done
+
+        log_success "=== BACKUP TERMINÉ ==="
+    }
+
+    # Exécution
+    main "$@"
+
+---
+# Secret pour les credentials AWS S3 et Slack
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backup-secrets
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/component: secrets
+type: Opaque
+data:
+  # Remplacer par vos vraies clés encodées en base64
+  # echo -n 'your-access-key' | base64
+  AWS_ACCESS_KEY_ID: <base64-encoded-access-key>
+  # echo -n 'your-secret-key' | base64
+  AWS_SECRET_ACCESS_KEY: <base64-encoded-secret-key>
+  # echo -n 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL' | base64
+  SLACK_WEBHOOK_URL: <base64-encoded-slack-webhook>
+
+---
+# ServiceAccount pour le backup avec permissions appropriées
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-service-account
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/component: serviceaccount
+
+---
+# ClusterRole avec permissions pour lire les ressources à sauvegarder
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backup-reader
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/component: rbac
+rules:
+  # Ressources dans tous les namespaces
+  - apiGroups: [""]
+    resources:
+      [
+        "pods",
+        "services",
+        "endpoints",
+        "persistentvolumeclaims",
+        "configmaps",
+        "secrets",
+      ]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list"]
+  # ArgoCD resources
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "appprojects"]
+    verbs: ["get", "list"]
+  # Traefik resources
+  - apiGroups: ["traefik.containo.us"]
+    resources: ["ingressroutes", "middlewares", "tlsoptions"]
+    verbs: ["get", "list"]
+  # Cert-manager resources
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates", "issuers", "clusterissuers"]
+    verbs: ["get", "list"]
+  # Monitoring resources
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors", "prometheusrules"]
+    verbs: ["get", "list"]
+  # Cluster-wide resources
+  - apiGroups: [""]
+    resources: ["namespaces", "nodes", "persistentvolumes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+  # Exec pour les backups de base de données
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backup-reader-binding
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/component: rbac
+subjects:
+  - kind: ServiceAccount
+    name: backup-service-account
+    namespace: backup
+roleRef:
+  kind: ClusterRole
+  name: backup-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# CronJob principal pour les backups quotidiens
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: infrastructure-backup
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/component: cronjob
+    app.kubernetes.io/part-of: infrastructure
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  # Tous les jours à 2h du matin
+  schedule: "0 2 * * *"
+  timeZone: "Europe/Paris"
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 5
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 7200 # 2h maximum
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: backup-infrastructure
+            app.kubernetes.io/component: job
+        spec:
+          serviceAccountName: backup-service-account
+          restartPolicy: OnFailure
+
+          # Configuration de sécurité
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+
+          containers:
+            - name: backup
+              image: amazon/aws-cli:2.15.17
+              command: ["/bin/bash", "/scripts/backup-script.sh"]
+
+              # Configuration de sécurité du conteneur
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+
+              # Ressources
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                  ephemeral-storage: 5Gi
+                limits:
+                  cpu: 500m
+                  memory: 1Gi
+                  ephemeral-storage: 10Gi
+
+              # Variables d'environnement
+              env:
+                - name: AWS_DEFAULT_REGION
+                  value: "eu-west-3"
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-secrets
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-secrets
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: SLACK_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-secrets
+                      key: SLACK_WEBHOOK_URL
+                      optional: true
+
+              # Montages de volumes
+              volumeMounts:
+                - name: backup-config
+                  mountPath: /config
+                  readOnly: true
+                - name: backup-scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: kubectl-binary
+                  mountPath: /usr/local/bin/kubectl
+                  subPath: kubectl
+                  readOnly: true
+                - name: tmp-storage
+                  mountPath: /tmp
+
+          # Volumes
+          volumes:
+            - name: backup-config
+              configMap:
+                name: backup-config
+                items:
+                  - key: backup.conf
+                    path: backup.conf
+            - name: backup-scripts
+              configMap:
+                name: backup-config
+                items:
+                  - key: backup-script.sh
+                    path: backup-script.sh
+                    mode: 0755
+            - name: kubectl-binary
+              emptyDir: {}
+            - name: tmp-storage
+              emptyDir:
+                sizeLimit: 10Gi
+
+          # Init container pour installer kubectl
+          initContainers:
+            - name: install-kubectl
+              image: bitnami/kubectl:1.29.1
+              command:
+                ["cp", "/opt/bitnami/kubectl/bin/kubectl", "/kubectl/kubectl"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 1001
+              volumeMounts:
+                - name: kubectl-binary
+                  mountPath: /kubectl
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 50m
+                  memory: 64Mi
+
+---
+# ServiceMonitor pour surveiller les backups avec Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backup-monitoring
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/part-of: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backup-infrastructure
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+
+---
+# PrometheusRule pour alerter en cas d'échec de backup
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: backup-alerts
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/part-of: kube-prometheus-stack
+spec:
+  groups:
+    - name: backup.rules
+      rules:
+        - alert: BackupJobFailed
+          expr: kube_job_status_failed{job_name=~"infrastructure-backup-.*"} > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Infrastructure backup job failed"
+            description: "Infrastructure backup job {{ $labels.job_name }} has failed"
+
+        - alert: BackupJobNotRun
+          expr: time() - kube_job_status_start_time{job_name=~"infrastructure-backup-.*"} > 86400 * 2
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Infrastructure backup job hasn't run"
+            description: "Infrastructure backup job hasn't run successfully for more than 2 days"
+
+---
+# NetworkPolicy pour sécuriser le namespace backup
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backup-network-policy
+  namespace: backup
+  labels:
+    app.kubernetes.io/name: backup-infrastructure
+    app.kubernetes.io/component: security
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    # Autoriser l'accès aux APIs Kubernetes
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # Autoriser l'accès Internet pour AWS S3 et Slack
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    # DNS
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+  ingress:
+    # Autoriser Prometheus à scraper les métriques
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080

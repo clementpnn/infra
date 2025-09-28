@@ -1,0 +1,43 @@
+apiVersion: v2
+name: loki-wrapper
+description: Chart de production pour Loki - Stack de logging centralisé
+type: application
+version: 0.1.0
+appVersion: "2.9.2"
+
+dependencies:
+  - name: loki
+    repository: "https://grafana.github.io/helm-charts"
+    version: "5.41.4"
+    condition: loki.enabled
+
+maintainers:
+  - name: "clement"
+    email: "contact@clementpnn.com"
+
+keywords:
+  - logging
+  - loki
+  - grafana
+  - observability
+  - logs
+  - kubernetes
+  - promtail
+
+sources:
+  - https://github.com/grafana/loki
+  - https://grafana.com/oss/loki/
+
+home: https://grafana.com/oss/loki/
+
+annotations:
+  category: Logging
+  licenses: AGPL-3.0
+  artifacthub.io/operator: "false"
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/images: |
+    - name: loki
+      image: grafana/loki:2.9.2
+    - name: promtail
+      image: grafana/promtail:2.9.2

@@ -1,0 +1,202 @@
+# =============================================================================
+# Certificats SSL GitLab Enterprise - Let's Encrypt Production
+# =============================================================================
+#
+# Tous les certificats SSL nécessaires pour GitLab Enterprise.
+# Utilise cert-manager avec Let's Encrypt pour génération automatique.
+#
+# Certificats générés :
+# - gitlab.clementpnn.com (interface principale)
+# - registry.clementpnn.com (registre Docker)
+# - minio.clementpnn.com (console MinIO)
+# - pages.clementpnn.com + *.pages.clementpnn.com (GitLab Pages)
+#
+# =============================================================================
+
+---
+# Certificat SSL pour GitLab principal
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: certificate
+    app.kubernetes.io/part-of: gitlab-enterprise
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: gitlab-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - gitlab.clementpnn.com
+  renewBefore: 720h     # 30 jours avant expiration
+  duration: 2160h       # 90 jours de validité
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+
+---
+# Certificat SSL pour Container Registry
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-registry-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-registry
+    app.kubernetes.io/component: certificate
+    app.kubernetes.io/part-of: gitlab-enterprise
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: gitlab-registry-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - registry.clementpnn.com
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+
+---
+# Certificat SSL pour MinIO Console
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-minio-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-minio
+    app.kubernetes.io/component: certificate
+    app.kubernetes.io/part-of: gitlab-enterprise
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: gitlab-minio-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - minio.clementpnn.com
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+
+---
+# Certificat SSL pour GitLab Pages (avec wildcard)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-pages-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-pages
+    app.kubernetes.io/component: certificate
+    app.kubernetes.io/part-of: gitlab-enterprise
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: gitlab-pages-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - pages.clementpnn.com
+    - "*.pages.clementpnn.com"
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+
+---
+# Certificat SSL pour GitLab SSH (optionnel, pour connexions SSH sécurisées)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-ssh-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-ssh
+    app.kubernetes.io/component: certificate
+    app.kubernetes.io/part-of: gitlab-enterprise
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: gitlab-ssh-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - gitlab.clementpnn.com  # Même certificat que principal
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+
+---
+# Certificate pour API GitLab (si besoin d'un certificat séparé)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-api-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-api
+    app.kubernetes.io/component: certificate
+    app.kubernetes.io/part-of: gitlab-enterprise
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: gitlab-api-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - gitlab.clementpnn.com  # API utilise le même domaine
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth

@@ -1,0 +1,100 @@
+apiVersion: v2
+name: gitlab-wrapper
+description: Chart de production pour GitLab Enterprise - Git Repository et CI/CD Platform
+type: application
+version: 0.1.0
+appVersion: "16.5.1"
+
+dependencies:
+  - name: gitlab
+    repository: "https://charts.gitlab.io"
+    version: "7.5.1"
+    condition: gitlab.enabled
+
+maintainers:
+  - name: Clément Pennec
+    email: clement@clementpnn.com
+    url: https://clementpnn.com
+
+keywords:
+  - gitlab
+  - git
+  - repository
+  - ci-cd
+  - devops
+  - enterprise
+  - source-control
+  - continuous-integration
+  - continuous-deployment
+  - version-control
+
+home: https://about.gitlab.com
+
+sources:
+  - https://gitlab.com/gitlab-org/gitlab
+  - https://gitlab.com/gitlab-org/charts/gitlab
+  - https://docs.gitlab.com
+
+annotations:
+  category: DevOps
+  artifacthub.io/license: MIT
+  artifacthub.io/images: |
+    - name: gitlab-webservice
+      image: registry.gitlab.com/gitlab-org/build/cng/gitlab-webservice-ee:v16.5.1
+    - name: gitlab-sidekiq
+      image: registry.gitlab.com/gitlab-org/build/cng/gitlab-sidekiq-ee:v16.5.1
+    - name: gitlab-gitaly
+      image: registry.gitlab.com/gitlab-org/build/cng/gitaly:v16.5.1
+    - name: postgresql
+      image: postgres:13.13
+    - name: redis
+      image: redis:7.0-alpine
+    - name: minio
+      image: minio/minio:RELEASE.2023-08-23T10-07-06Z
+  artifacthub.io/changes: |
+    - kind: added
+      description: Production-ready GitLab Enterprise deployment
+    - kind: added
+      description: PostgreSQL backend for scalability and reliability
+    - kind: added
+      description: Redis for caching and session management
+    - kind: added
+      description: MinIO for object storage (artifacts, LFS, uploads)
+    - kind: added
+      description: Integrated CI/CD runners with Kubernetes executor
+    - kind: added
+      description: SSO integration with Keycloak OIDC
+    - kind: added
+      description: SMTP email configuration for notifications
+    - kind: added
+      description: Automatic SSL certificates with cert-manager
+    - kind: added
+      description: Backup integration with S3 compatible storage
+    - kind: added
+      description: Monitoring and alerting with Prometheus integration
+    - kind: added
+      description: High availability configuration for production
+    - kind: added
+      description: Container registry for Docker images
+    - kind: added
+      description: Pages for static website hosting
+  artifacthub.io/maintainers: |
+    - name: Clément Pennec
+      email: clement@clementpnn.com
+  artifacthub.io/operator: false
+  artifacthub.io/prerelease: false
+  artifacthub.io/recommendations: |
+    - url: https://artifacthub.io/packages/helm/bitnami/postgresql
+    - url: https://artifacthub.io/packages/helm/bitnami/redis
+    - url: https://artifacthub.io/packages/helm/jetstack/cert-manager
+    - url: https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
+  artifacthub.io/links: |
+    - name: GitLab Documentation
+      url: https://docs.gitlab.com
+    - name: GitLab Helm Chart
+      url: https://docs.gitlab.com/charts/
+    - name: Source Code
+      url: https://github.com/clementpnn/infra/tree/main/charts/gitlab
+  artifacthub.io/screenshots: |
+    - title: GitLab Dashboard
+      url: https://about.gitlab.com/images/press/logo/png/gitlab-logo-gray-rgb.png

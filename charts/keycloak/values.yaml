@@ -1,0 +1,169 @@
+keycloak:
+  # Configuration globale
+  global:
+    storageClass: "local-path"
+
+  # Configuration Keycloak
+  auth:
+    adminUser: admin
+    # Le mot de passe sera généré automatiquement et stocké dans un secret
+    existingSecret: ""
+
+  # Configuration de production
+  production: true
+  proxy: edge
+  httpRelativePath: "/"
+
+  # Configuration des ressources
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+
+  # Configuration du service
+  service:
+    type: ClusterIP
+    ports:
+      http: 8080
+      https: 8443
+
+  # Désactiver l'ingress natif (on utilise Traefik IngressRoute)
+  ingress:
+    enabled: false
+
+  # Configuration de la base de données PostgreSQL
+  postgresql:
+    enabled: true
+    auth:
+      postgresPassword: ""
+      username: keycloak
+      password: ""
+      database: keycloak
+    primary:
+      persistence:
+        enabled: true
+        size: 8Gi
+        storageClass: "local-path"
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+        limits:
+          cpu: "500m"
+          memory: "1Gi"
+
+  # Configuration de cache (optionnel)
+  cache:
+    enabled: true
+    stackName: "kubernetes"
+
+  # Configuration des metrics pour Prometheus
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: false
+    prometheusRule:
+      enabled: false
+
+  # Configuration de sécurité
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+    seccompProfile:
+      type: RuntimeDefault
+
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+
+  # Configuration de logging
+  logging:
+    level: INFO
+
+  # Configuration des sondes de santé
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 300
+    periodSeconds: 1
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 1
+    failureThreshold: 3
+    successThreshold: 1
+
+  # Configuration des variables d'environnement
+  extraEnvVars:
+    - name: KEYCLOAK_PROXY_ADDRESS_FORWARDING
+      value: "true"
+    - name: KEYCLOAK_FRONTEND_URL
+      value: "https://auth.clementpnn.com"
+    - name: KC_HOSTNAME_STRICT
+      value: "false"
+    - name: KC_HOSTNAME_STRICT_HTTPS
+      value: "false"
+    - name: KC_HTTP_ENABLED
+      value: "true"
+    - name: KC_PROXY
+      value: "edge"
+
+  # Configuration des volumes supplémentaires si nécessaire
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  # Configuration du déploiement
+  replicaCount: 1
+
+  # Configuration des affinités et tolérations
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Configuration du ServiceAccount
+  serviceAccount:
+    create: true
+    annotations: {}
+    automountServiceAccountToken: false
+
+# Configuration personnalisée pour l'intégration avec Traefik
+traefik:
+  # IngressRoute pour HTTP (redirection vers HTTPS)
+  ingressRoute:
+    enabled: true
+    annotations: {}
+
+  # Configuration TLS avec Cert-Manager
+  tls:
+    enabled: true
+    secretName: keycloak-tls
+    domains:
+      - auth.clementpnn.com
+
+# Configuration des secrets
+secrets:
+  # Les mots de passe seront générés automatiquement si non spécifiés
+  keycloak:
+    adminPassword: "" # Généré automatiquement
+  postgresql:
+    password: "" # Généré automatiquement
+    postgresPassword: "" # Généré automatiquement
+
+# Configuration de sauvegarde (optionnel)
+backup:
+  enabled: false
+  schedule: "0 2 * * *" # Tous les jours à 2h du matin
+  retention: "7d"

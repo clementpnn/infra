@@ -1,0 +1,512 @@
+# =============================================================================
+# Configuration Production pour OPNsense Firewall Controller
+# =============================================================================
+#
+# Configuration pour le contrôleur Kubernetes OPNsense qui gère :
+# - Firewall externe OPNsense via API REST
+# - Règles de sécurité automatisées
+# - Configuration VPN WireGuard/OpenVPN
+# - IPS/IDS centralisé
+# - Monitoring et alertes
+# - Intégration avec l'infrastructure K8s
+#
+# Architecture :
+# - OPNsense physique/VM externe (hors cluster)
+# - Contrôleur K8s pour automatisation
+# - Monitoring intégré Prometheus
+# - Logs centralisés vers Loki
+#
+# =============================================================================
+
+opnsense-controller:
+  # =============================================================================
+  # Configuration globale
+  # =============================================================================
+  global:
+    imageRegistry: docker.io
+    storageClass: "local-path"
+
+  # =============================================================================
+  # Configuration du contrôleur OPNsense
+  # =============================================================================
+  controller:
+    enabled: true
+
+    # Image du contrôleur
+    image:
+      repository: opnsense/kubernetes-controller
+      tag: "v0.1.0"
+      pullPolicy: IfNotPresent
+
+    # Réplication pour haute disponibilité
+    replicaCount: 2
+
+    # Configuration des ressources
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+      seccompProfile:
+        type: RuntimeDefault
+
+    # Variables d'environnement
+    env:
+      - name: OPNSENSE_URL
+        value: "https://opnsense.clementpnn.local"
+      - name: OPNSENSE_VERIFY_SSL
+        value: "true"
+      - name: RECONCILE_INTERVAL
+        value: "30s"
+      - name: LOG_LEVEL
+        value: "info"
+
+    # Configuration des secrets (API OPNsense)
+    secrets:
+      opnsense:
+        existingSecret: "opnsense-credentials"
+        keys:
+          apiKey: "API_KEY"
+          apiSecret: "API_SECRET"
+
+  # =============================================================================
+  # Configuration OPNsense externe
+  # =============================================================================
+  opnsense:
+    # Informations de connexion
+    connection:
+      host: "opnsense.clementpnn.local"
+      port: 443
+      protocol: "https"
+      verifySsl: true
+      timeout: 30
+
+    # Configuration du firewall
+    firewall:
+      # Règles par défaut
+      defaultPolicy: "deny"
+
+      # Règles automatiques pour Kubernetes
+      autoRules:
+        enabled: true
+        # Autoriser le trafic interne du cluster
+        allowClusterTraffic: true
+        # Autoriser les services exposés
+        allowIngressTraffic: true
+        # Bloquer les services non exposés
+        blockDirectAccess: true
+
+      # Règles personnalisées
+      rules:
+        # Règle pour autoriser HTTPS vers les services exposés
+        - name: "allow-https-ingress"
+          action: "pass"
+          interface: "wan"
+          protocol: "tcp"
+          source: "any"
+          destination: "kubernetes_nodes"
+          destination_port: "443"
+          description: "Allow HTTPS to Kubernetes ingress"
+          enabled: true
+
+        # Règle pour autoriser HTTP (redirection vers HTTPS)
+        - name: "allow-http-redirect"
+          action: "pass"
+          interface: "wan"
+          protocol: "tcp"
+          source: "any"
+          destination: "kubernetes_nodes"
+          destination_port: "80"
+          description: "Allow HTTP for HTTPS redirect"
+          enabled: true
+
+        # Règle pour autoriser SSH management
+        - name: "allow-ssh-management"
+          action: "pass"
+          interface: "wan"
+          protocol: "tcp"
+          source: "management_network"
+          destination: "kubernetes_nodes"
+          destination_port: "22"
+          description: "Allow SSH for management"
+          enabled: true
+
+        # Bloquer tout le reste du trafic entrant
+        - name: "block-default-wan"
+          action: "block"
+          interface: "wan"
+          protocol: "any"
+          source: "any"
+          destination: "any"
+          description: "Block all other WAN traffic"
+          enabled: true
+          log: true
+
+    # Configuration VPN
+    vpn:
+      # WireGuard VPN
+      wireguard:
+        enabled: true
+        interface: "wg0"
+        port: 51820
+
+        # Configuration serveur
+        server:
+          privateKey: ""  # Sera configuré via secret
+          address: "10.8.0.1/24"
+          dns: ["1.1.1.1", "1.0.0.1"]
+
+        # Clients autorisés (gérés via CRDs)
+        clients: []
+
+      # OpenVPN (optionnel)
+      openvpn:
+        enabled: false
+
+    # Configuration IPS/IDS
+    intrusion:
+      # Suricata IPS
+      suricata:
+        enabled: true
+        mode: "ips"  # ou "ids"
+        interfaces: ["wan", "lan"]
+
+        # Règles
+        rulesets:
+          - name: "emerging-threats"
+            enabled: true
+            url: "https://rules.emergingthreats.net/open/suricata/rules/"
+
+          - name: "abuse-ch"
+            enabled: true
+            url: "https://sslbl.abuse.ch/blacklist/sslipblacklist.rules"
+
+        # Configuration des alertes
+        alerts:
+          # Bloquer automatiquement les IPs malveillantes
+          autoBlock: true
+          blockDuration: "24h"
+
+          # Whitelist pour éviter de bloquer les services légitimes
+          whitelist:
+            - "10.0.0.0/8"
+            - "192.168.0.0/16"
+            - "172.16.0.0/12"
+
+    # Configuration du proxy (filtrage web)
+    proxy:
+      enabled: true
+
+      # Filtrage de contenu
+      contentFilter:
+        enabled: true
+        categories:
+          - malware
+          - phishing
+          - adult
+          - gambling
+
+      # Cache web
+      cache:
+        enabled: true
+        size: "1GB"
+
+    # Configuration DHCP (si applicable)
+    dhcp:
+      enabled: false  # Généralement géré par l'infrastructure externe
+
+  # =============================================================================
+  # Configuration du monitoring OPNsense
+  # =============================================================================
+  monitoring:
+    # Exporter Prometheus pour OPNsense
+    prometheus:
+      enabled: true
+
+      # Configuration de l'exporter
+      exporter:
+        image:
+          repository: opnsense/prometheus-exporter
+          tag: "v0.1.0"
+          pullPolicy: IfNotPresent
+
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+
+        # Métriques à collecter
+        metrics:
+          - system_stats
+          - interface_stats
+          - firewall_stats
+          - vpn_stats
+          - ips_stats
+          - proxy_stats
+
+        # Intervalle de collecte
+        scrapeInterval: "30s"
+
+      # ServiceMonitor pour Prometheus
+      serviceMonitor:
+        enabled: true
+        labels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+        interval: 30s
+        path: /metrics
+
+    # Envoi des logs vers Loki
+    logging:
+      enabled: true
+
+      # Configuration du log shipper
+      logShipper:
+        enabled: true
+        destination: "http://loki-gateway.monitoring:80/loki/api/v1/push"
+
+        # Types de logs à envoyer
+        logTypes:
+          - firewall
+          - system
+          - vpn
+          - ips
+          - proxy
+
+        # Format des logs
+        format: "json"
+
+        # Labels pour Loki
+        labels:
+          source: "opnsense"
+          environment: "production"
+
+  # =============================================================================
+  # Configuration des CRDs (Custom Resource Definitions)
+  # =============================================================================
+  crds:
+    enabled: true
+
+    # Définition des règles de firewall via CRD
+    firewallRules:
+      apiVersion: firewall.opnsense.org/v1
+      kind: OPNsenseRule
+
+    # Définition des VPN via CRD
+    vpnConfigs:
+      apiVersion: network.opnsense.org/v1
+      kind: OPNsenseVPN
+
+  # =============================================================================
+  # Configuration RBAC
+  # =============================================================================
+  rbac:
+    create: true
+
+    # Permissions pour le contrôleur
+    rules:
+      - apiGroups: [""]
+        resources: ["secrets", "configmaps", "services", "endpoints"]
+        verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+      - apiGroups: ["firewall.opnsense.org"]
+        resources: ["opnsenserules"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+      - apiGroups: ["network.opnsense.org"]
+        resources: ["opnsensevpns"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Configuration du ServiceAccount
+  serviceAccount:
+    create: true
+    name: opnsense-controller
+    annotations:
+      app.kubernetes.io/name: opnsense-controller
+      app.kubernetes.io/component: firewall
+
+  # =============================================================================
+  # Configuration des webhooks
+  # =============================================================================
+  webhooks:
+    # Webhook pour validation des règles
+    validation:
+      enabled: true
+      port: 9443
+
+    # Webhook pour mutation automatique
+    mutation:
+      enabled: true
+      port: 9444
+
+  # =============================================================================
+  # Configuration des alertes
+  # =============================================================================
+  alerting:
+    enabled: true
+
+    # Règles d'alerte Prometheus
+    prometheusRules:
+      - name: opnsense-firewall
+        rules:
+          - alert: OPNsenseDown
+            expr: up{job="opnsense-exporter"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "OPNsense firewall is down"
+              description: "OPNsense firewall has been down for more than 1 minute"
+
+          - alert: OPNsenseHighCPU
+            expr: opnsense_system_cpu_usage > 85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "OPNsense CPU usage high"
+              description: "OPNsense CPU usage is {{ $value }}%"
+
+          - alert: OPNsenseHighMemory
+            expr: opnsense_system_memory_usage > 90
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "OPNsense memory usage high"
+              description: "OPNsense memory usage is {{ $value }}%"
+
+          - alert: OPNsenseVPNDown
+            expr: opnsense_vpn_status == 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "OPNsense VPN connection down"
+              description: "VPN connection {{ $labels.vpn_name }} is down"
+
+          - alert: OPNsenseIPSAttack
+            expr: increase(opnsense_ips_blocked_total[5m]) > 10
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High number of IPS blocks detected"
+              description: "{{ $value }} attacks blocked in the last 5 minutes"
+
+    # Configuration des notifications
+    notifications:
+      slack:
+        enabled: false
+        webhookUrl: ""
+        channel: "#security-alerts"
+
+      email:
+        enabled: false
+        smtp:
+          host: ""
+          port: 587
+          username: ""
+          password: ""
+          from: "opnsense@clementpnn.com"
+
+  # =============================================================================
+  # Configuration de sauvegarde
+  # =============================================================================
+  backup:
+    enabled: true
+
+    # Sauvegarde de la configuration OPNsense
+    schedule: "0 2 * * *"  # Tous les jours à 2h
+    retention: "30d"       # Conserver 30 jours
+
+    # Stockage des sauvegardes
+    storage:
+      type: "pvc"
+      size: "5Gi"
+      storageClass: "local-path"
+
+# =============================================================================
+# Configuration pour l'intégration Traefik (optionnel - interface web)
+# =============================================================================
+traefik:
+  ingressRoute:
+    enabled: true
+    host: firewall.clementpnn.com
+    tls:
+      enabled: true
+      secretName: opnsense-web-tls
+    # Proxy vers l'interface web OPNsense
+    service:
+      name: opnsense-web-proxy
+      port: 443
+
+# =============================================================================
+# Configuration de sécurité réseau
+# =============================================================================
+networkPolicy:
+  enabled: true
+
+  # Règles d'ingress
+  ingress:
+    # Permettre l'accès depuis le monitoring
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: monitoring
+      ports:
+      - protocol: TCP
+        port: 8080  # Port métriques
+
+    # Permettre l'accès depuis Traefik si interface web exposée
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: traefik
+      ports:
+      - protocol: TCP
+        port: 8443  # Port interface web proxy
+
+  # Règles d'egress
+  egress:
+    # Permettre l'accès vers OPNsense externe
+    - to: []
+      ports:
+      - protocol: TCP
+        port: 443  # API HTTPS
+      - protocol: TCP
+        port: 22   # SSH management
+
+    # Permettre l'accès DNS
+    - to: []
+      ports:
+      - protocol: UDP
+        port: 53
+
+# =============================================================================
+# Configuration de test (désactivé en production)
+# =============================================================================
+tests:
+  enabled: false
+
+# =============================================================================
+# Configuration de développement/debug (désactivé en production)
+# =============================================================================
+debug:
+  enabled: false
+  logLevel: "info"

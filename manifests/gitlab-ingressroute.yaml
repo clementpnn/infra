@@ -1,0 +1,658 @@
+# =============================================================================
+# IngressRoutes Traefik Production pour GitLab Enterprise
+# =============================================================================
+#
+# Configuration production pour l'exposition de GitLab via Traefik :
+# - GitLab (interface principale)
+# - Registry (registre de conteneurs Docker)
+# - MinIO Console (interface d'administration stockage)
+# - GitLab Pages (hébergement statique)
+#
+# Avec :
+# - HTTPS automatique via Cert-Manager (Let's Encrypt)
+# - Redirection HTTP vers HTTPS obligatoire
+# - Headers de sécurité renforcés
+# - Rate limiting adapté à chaque service
+# - Gestion d'erreurs personnalisées
+# - Support SSH pour Git (port 22)
+#
+# =============================================================================
+
+---
+# IngressRoute HTTPS pour GitLab principal
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-https
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: gitlab-stack
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`gitlab.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: gitlab-webservice-default
+          port: 8080
+          scheme: http
+      middlewares:
+        - name: gitlab-security-headers
+        - name: gitlab-rate-limit
+  tls:
+    secretName: gitlab-tls
+    domains:
+      - main: gitlab.clementpnn.com
+
+---
+# IngressRoute HTTP redirect pour GitLab
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-http-redirect
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`gitlab.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: gitlab-webservice-default
+          port: 8080
+      middlewares:
+        - name: https-redirect
+
+---
+# IngressRoute HTTPS pour Registry
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-registry-https
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-registry
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: gitlab-stack
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`registry.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: gitlab-registry
+          port: 5000
+          scheme: http
+      middlewares:
+        - name: registry-security-headers
+        - name: registry-rate-limit
+  tls:
+    secretName: gitlab-registry-tls
+    domains:
+      - main: registry.clementpnn.com
+
+---
+# IngressRoute HTTP redirect pour Registry
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-registry-http-redirect
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-registry
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`registry.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: gitlab-registry
+          port: 5000
+      middlewares:
+        - name: https-redirect
+
+---
+# IngressRoute HTTPS pour MinIO Console
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-minio-https
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-minio
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: gitlab-stack
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`minio.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: gitlab-minio-console
+          port: 9001
+          scheme: http
+      middlewares:
+        - name: minio-security-headers
+        - name: minio-auth
+        - name: minio-rate-limit
+  tls:
+    secretName: gitlab-minio-tls
+    domains:
+      - main: minio.clementpnn.com
+
+---
+# IngressRoute HTTP redirect pour MinIO
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-minio-http-redirect
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-minio
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`minio.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: gitlab-minio-console
+          port: 9001
+      middlewares:
+        - name: https-redirect
+
+---
+# IngressRoute HTTPS pour GitLab Pages (wildcard)
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-pages-https
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-pages
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: gitlab-stack
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`pages.clementpnn.com`) || HostRegexp(`{subdomain:[a-zA-Z0-9-]+}.pages.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: gitlab-gitlab-pages
+          port: 8090
+          scheme: http
+      middlewares:
+        - name: pages-security-headers
+        - name: pages-rate-limit
+  tls:
+    secretName: gitlab-pages-tls
+    domains:
+      - main: pages.clementpnn.com
+        sans:
+          - "*.pages.clementpnn.com"
+
+---
+# IngressRoute HTTP redirect pour Pages
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-pages-http-redirect
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-pages
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`pages.clementpnn.com`) || HostRegexp(`{subdomain:[a-zA-Z0-9-]+}.pages.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: gitlab-gitlab-pages
+          port: 8090
+      middlewares:
+        - name: https-redirect
+
+---
+# Middleware pour redirection HTTPS obligatoire
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-stack
+    app.kubernetes.io/component: middleware
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+
+---
+# Middleware pour headers de sécurité GitLab
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: gitlab-security-headers
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: middleware
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: https
+      X-Forwarded-Port: "443"
+      X-Real-IP: ""
+    customResponseHeaders:
+      # Headers de sécurité standards
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: SAMEORIGIN
+      X-XSS-Protection: "1; mode=block"
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+      Referrer-Policy: strict-origin-when-cross-origin
+      Permissions-Policy: "camera=(), microphone=(), geolocation=(), payment=()"
+
+      # Headers spécifiques GitLab
+      X-GitLab-Instance: "https://gitlab.clementpnn.com"
+
+      # CSP pour GitLab
+      Content-Security-Policy: >-
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.recaptcha.net https://www.gstatic.com;
+        style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+        img-src 'self' data: https: blob:;
+        font-src 'self' data: https://fonts.gstatic.com;
+        connect-src 'self' wss: https:;
+        media-src 'self' blob:;
+        object-src 'none';
+        child-src 'self' https://www.recaptcha.net;
+        worker-src 'self' blob:;
+        form-action 'self' https:;
+        frame-ancestors 'self';
+        base-uri 'self';
+        upgrade-insecure-requests
+
+---
+# Middleware pour headers de sécurité Registry
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: registry-security-headers
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-registry
+    app.kubernetes.io/component: middleware
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: https
+      X-Forwarded-Port: "443"
+    customResponseHeaders:
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: DENY
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+
+      # Headers spécifiques Registry Docker
+      Docker-Distribution-Api-Version: registry/2.0
+
+---
+# Middleware pour headers de sécurité MinIO
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: minio-security-headers
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-minio
+    app.kubernetes.io/component: middleware
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: https
+      X-Forwarded-Port: "443"
+    customResponseHeaders:
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: SAMEORIGIN
+      X-XSS-Protection: "1; mode=block"
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+
+---
+# Middleware pour headers de sécurité Pages
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: pages-security-headers
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-pages
+    app.kubernetes.io/component: middleware
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: https
+      X-Forwarded-Port: "443"
+    customResponseHeaders:
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: SAMEORIGIN
+      X-XSS-Protection: "1; mode=block"
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+      Referrer-Policy: strict-origin-when-cross-origin
+
+---
+# Middleware d'authentification pour MinIO Console
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: minio-auth
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-minio
+    app.kubernetes.io/component: middleware
+spec:
+  basicAuth:
+    secret: gitlab-minio-admin-auth
+    realm: "MinIO Console - GitLab Object Storage"
+
+---
+# Middleware de rate limiting pour GitLab
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: gitlab-rate-limit
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: middleware
+spec:
+  rateLimit:
+    period: 1m
+    burst: 100
+    average: 50
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+
+---
+# Middleware de rate limiting pour Registry
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: registry-rate-limit
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-registry
+    app.kubernetes.io/component: middleware
+spec:
+  rateLimit:
+    period: 1m
+    burst: 200
+    average: 100
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+
+---
+# Middleware de rate limiting pour MinIO
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: minio-rate-limit
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-minio
+    app.kubernetes.io/component: middleware
+spec:
+  rateLimit:
+    period: 1m
+    burst: 50
+    average: 25
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+
+---
+# Middleware de rate limiting pour Pages
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: pages-rate-limit
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-pages
+    app.kubernetes.io/component: middleware
+spec:
+  rateLimit:
+    period: 1m
+    burst: 300
+    average: 150
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+
+---
+# TCP Route pour SSH Git (port 22)
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: gitlab-ssh
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: ssh
+spec:
+  entryPoints:
+    - ssh
+  routes:
+    - match: HostSNI(`*`)
+      services:
+        - name: gitlab-gitlab-shell
+          port: 22
+          weight: 100
+  tls:
+    passthrough: false
+
+---
+# Secret pour l'authentification MinIO admin
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-minio-admin-auth
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-minio
+    app.kubernetes.io/component: auth
+type: Opaque
+data:
+  # admin:minio2024! (généré avec htpasswd)
+  users: YWRtaW46JGFwcjEkSDZkdm5pTkwkTzJCWUxQVWQzSVdQNEc4TUtWMHJhMQ==
+
+---
+# Certificats SSL pour tous les services GitLab
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: gitlab-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - gitlab.clementpnn.com
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-registry-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-registry
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: gitlab-registry-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - registry.clementpnn.com
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-minio-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-minio
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: gitlab-minio-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - minio.clementpnn.com
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab-pages-tls-certificate
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab-pages
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: gitlab-pages-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - pages.clementpnn.com
+    - "*.pages.clementpnn.com"
+  renewBefore: 720h
+  duration: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+---
+# ServiceMonitor pour monitoring GitLab par Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gitlab-monitoring
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/part-of: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: gitlab
+      component: webservice
+  namespaceSelector:
+    matchNames:
+      - gitlab
+  endpoints:
+    - port: http-metrics
+      interval: 30s
+      path: /-/metrics
+      honorLabels: true
+
+---
+# NetworkPolicy pour sécuriser l'accès à GitLab
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitlab-ingress
+  namespace: gitlab
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: security
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Autoriser Traefik à accéder aux services GitLab
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: traefik
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: TCP
+          port: 8080    # GitLab webservice
+        - protocol: TCP
+          port: 5000    # Registry
+        - protocol: TCP
+          port: 9001    # MinIO console
+        - protocol: TCP
+          port: 8090    # GitLab Pages
+        - protocol: TCP
+          port: 22      # SSH Git
+    # Autoriser les communications internes dans le namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: gitlab
+    # Autoriser le monitoring depuis le namespace monitoring
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Autoriser toutes les communications sortantes pour GitLab
+    - {}

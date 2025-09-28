@@ -1,0 +1,767 @@
+# =============================================================================
+# Configuration Production pour Bitwarden (Vaultwarden) Enterprise
+# =============================================================================
+#
+# Gestionnaire de mots de passe d'entreprise avec :
+# - Support multi-utilisateur pour équipes
+# - Backend PostgreSQL pour performance et scalabilité
+# - Interface d'administration sécurisée
+# - SMTP intégré pour gestion des comptes
+# - Backup automatique et disaster recovery
+# - Monitoring et alertes intégrés
+# - Intégration OIDC avec Keycloak
+# - API complète pour intégrations
+# - Politiques de sécurité d'entreprise
+#
+# Architecture :
+# - Vaultwarden haute disponibilité
+# - PostgreSQL dédié pour persistance
+# - Redis pour sessions et cache
+# - Stockage sécurisé pour attachments
+# - Monitoring Prometheus intégré
+#
+# =============================================================================
+
+vaultwarden:
+  # =============================================================================
+  # Configuration globale
+  # =============================================================================
+  global:
+    storageClass: "local-path"
+
+  # =============================================================================
+  # Configuration de l'image Vaultwarden
+  # =============================================================================
+  image:
+    registry: docker.io
+    repository: vaultwarden/server
+    tag: "1.30.1-alpine"
+    pullPolicy: IfNotPresent
+
+  # =============================================================================
+  # Configuration du déploiement
+  # =============================================================================
+  replicaCount: 2  # Haute disponibilité
+
+  # Configuration des ressources pour production
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+  # Configuration de mise à jour
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+
+  # =============================================================================
+  # Configuration du service
+  # =============================================================================
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "8080"
+      prometheus.io/path: "/metrics"
+
+  # =============================================================================
+  # Configuration de l'ingress (désactivé - on utilise Traefik)
+  # =============================================================================
+  ingress:
+    enabled: false
+
+  # =============================================================================
+  # Configuration Vaultwarden
+  # =============================================================================
+  config:
+    # Configuration du domaine
+    domain: "https://passwords.clementpnn.com"
+
+    # Configuration de sécurité
+    rocketPort: 8080
+    rocketWorkers: 10
+
+    # Désactiver l'enregistrement public (mode entreprise)
+    signupsAllowed: false
+    invitationsAllowed: true
+
+    # Confirmer l'email obligatoire
+    signupsVerify: true
+    signupsDomainWhitelist: "clementpnn.com"
+
+    # Configuration admin
+    adminToken: ""  # Sera configuré via secret
+
+    # Désactiver les statistiques anonymes
+    enableDbWal: true
+
+    # Configuration de logging
+    logLevel: "info"
+    logFile: "/data/vaultwarden.log"
+
+    # Configuration des sessions
+    extendedLogging: true
+
+    # Configuration du rate limiting
+    loginRateLimit:
+      maxBurst: 10
+      seconds: 60
+
+    adminRateLimit:
+      maxBurst: 3
+      seconds: 300
+
+    # Configuration des données
+    dataFolder: "/data"
+
+    # Configuration des attachments
+    attachmentsFolder: "/data/attachments"
+    attachmentsSizeLimit: 100  # MB par fichier
+    attachmentsTotalSizeLimit: 1024  # MB par utilisateur
+
+    # Configuration de l'icône de service
+    iconCacheFolder: "/data/icon_cache"
+    iconCacheTtl: 2592000  # 30 jours
+    iconCacheNegTtl: 259200  # 3 jours
+
+    # Configuration des templates d'email
+    templatesFolder: "/data/templates"
+
+    # Configuration de sécurité avancée
+    passwordIterations: 100000
+    passwordHintsAllowed: false
+    showPasswordHint: false
+
+    # Configuration des organisations
+    orgCreationUsers: "admin@clementpnn.com"
+    orgAttachmentLimit: 1024  # MB par organisation
+    orgUserTypeLimit: 3  # Manager max
+
+    # Configuration des collections
+    orgEventsEnabled: true
+    orgGroupsEnabled: true
+
+    # Configuration d'urgence
+    emergencyAccessAllowed: true
+
+    # Configuration des appareils
+    deviceVerificationEnabled: true
+    requireDeviceEmail: true
+
+    # Configuration 2FA
+    disableAdminToken: false
+
+    # Configuration de l'API
+    disableIconDownload: false
+    reloadTemplates: true
+
+  # =============================================================================
+  # Configuration de la base de données PostgreSQL
+  # =============================================================================
+  database:
+    type: "postgresql"
+
+    # Configuration externe PostgreSQL
+    externalUrl: "postgresql://vaultwarden:${DATABASE_PASSWORD}@postgresql.secrets:5432/vaultwarden"
+
+    # Pool de connexions
+    maxConnections: 20
+    connectionTimeout: 30
+
+  # Configuration PostgreSQL dédiée
+  postgresql:
+    enabled: true
+
+    auth:
+      username: "vaultwarden"
+      password: ""  # Généré automatiquement
+      database: "vaultwarden"
+      postgresPassword: ""  # Généré automatiquement
+      existingSecret: "vaultwarden-postgresql"
+
+    primary:
+      persistence:
+        enabled: true
+        size: 20Gi
+        storageClass: "local-path"
+
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        labels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+
+  # =============================================================================
+  # Configuration Redis pour sessions
+  # =============================================================================
+  redis:
+    enabled: true
+
+    auth:
+      enabled: true
+      password: ""  # Généré automatiquement
+      existingSecret: "vaultwarden-redis"
+
+    master:
+      persistence:
+        enabled: true
+        size: 2Gi
+        storageClass: "local-path"
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+
+  # =============================================================================
+  # Configuration SMTP pour emails
+  # =============================================================================
+  smtp:
+    enabled: true
+
+    # Configuration du serveur SMTP
+    host: "smtp.gmail.com"  # À adapter selon votre provider
+    port: 587
+    ssl: false
+    starttls: true
+
+    # Authentification
+    username: "infrastructure@clementpnn.com"
+    password: ""  # Configuré via secret
+    existingSecret: "vaultwarden-smtp"
+
+    # Configuration des emails
+    from: "infrastructure@clementpnn.com"
+    fromName: "Infrastructure Clement - Password Manager"
+
+    # Templates d'emails personnalisés
+    templates:
+      invite:
+        subject: "Invitation à rejoindre le gestionnaire de mots de passe"
+      confirm:
+        subject: "Confirmez votre compte"
+      change:
+        subject: "Changement sur votre compte"
+
+  # =============================================================================
+  # Configuration OIDC avec Keycloak
+  # =============================================================================
+  oidc:
+    enabled: true
+
+    # Configuration Keycloak
+    issuerUrl: "https://auth.clementpnn.com/realms/infrastructure"
+    clientId: "bitwarden"
+    clientSecret: ""  # Configuré via secret
+
+    # Scopes et claims
+    scopes: "openid email profile groups"
+
+    # Mapping des utilisateurs
+    userClaim: "email"
+    nameClaim: "name"
+    emailClaim: "email"
+
+    # Auto-création des utilisateurs
+    autoCreateUsers: true
+
+    # Groupes autorisés
+    allowedGroups: ["bitwarden-users", "employees"]
+
+  # =============================================================================
+  # Configuration de sécurité
+  # =============================================================================
+  security:
+    # Configuration du pod
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+      seccompProfile:
+        type: RuntimeDefault
+
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: false  # Vaultwarden écrit des logs
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      seccompProfile:
+        type: RuntimeDefault
+
+  # =============================================================================
+  # Configuration des sondes de santé
+  # =============================================================================
+  probes:
+    liveness:
+      enabled: true
+      httpGet:
+        path: /alive
+        port: 8080
+        scheme: HTTP
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+      successThreshold: 1
+
+    readiness:
+      enabled: true
+      httpGet:
+        path: /
+        port: 8080
+        scheme: HTTP
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+      successThreshold: 1
+
+    startup:
+      enabled: true
+      httpGet:
+        path: /
+        port: 8080
+        scheme: HTTP
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 30
+      successThreshold: 1
+
+  # =============================================================================
+  # Configuration de persistance
+  # =============================================================================
+  persistence:
+    enabled: true
+
+    # Volume principal pour les données
+    data:
+      enabled: true
+      size: 50Gi
+      storageClass: "local-path"
+      accessMode: ReadWriteOnce
+      mountPath: /data
+
+    # Volume pour les attachments
+    attachments:
+      enabled: true
+      size: 100Gi
+      storageClass: "local-path"
+      accessMode: ReadWriteOnce
+      mountPath: /data/attachments
+
+  # =============================================================================
+  # Configuration des variables d'environnement
+  # =============================================================================
+  env:
+    # Configuration générale
+    - name: ROCKET_PORT
+      value: "8080"
+    - name: ROCKET_WORKERS
+      value: "10"
+
+    # Configuration de sécurité
+    - name: SIGNUPS_ALLOWED
+      value: "false"
+    - name: INVITATIONS_ALLOWED
+      value: "true"
+    - name: SIGNUPS_VERIFY
+      value: "true"
+    - name: SIGNUPS_DOMAINS_WHITELIST
+      value: "clementpnn.com"
+
+    # Configuration des organisations
+    - name: ORG_CREATION_USERS
+      value: "admin@clementpnn.com"
+    - name: ORG_EVENTS_ENABLED
+      value: "true"
+    - name: ORG_GROUPS_ENABLED
+      value: "true"
+
+    # Configuration de logging
+    - name: LOG_LEVEL
+      value: "info"
+    - name: EXTENDED_LOGGING
+      value: "true"
+
+    # Configuration de sécurité avancée
+    - name: PASSWORD_ITERATIONS
+      value: "100000"
+    - name: PASSWORD_HINTS_ALLOWED
+      value: "false"
+    - name: SHOW_PASSWORD_HINT
+      value: "false"
+
+    # Configuration des limites
+    - name: ATTACHMENT_LIMIT_KB
+      value: "102400"  # 100MB
+    - name: ATTACHMENT_LIMIT_ORG_KB
+      value: "1048576"  # 1GB
+
+    # Configuration de l'icône
+    - name: ICON_CACHE_TTL
+      value: "2592000"
+    - name: ICON_CACHE_NEGTTL
+      value: "259200"
+
+    # Configuration 2FA
+    - name: EMERGENCY_ACCESS_ALLOWED
+      value: "true"
+    - name: SENDS_ALLOWED
+      value: "true"
+
+    # Configuration du domaine
+    - name: DOMAIN
+      value: "https://passwords.clementpnn.com"
+
+  # Variables d'environnement depuis des secrets
+  envFromSecret:
+    - name: ADMIN_TOKEN
+      secretName: vaultwarden-secrets
+      key: admin-token
+
+    - name: DATABASE_URL
+      secretName: vaultwarden-postgresql
+      key: database-url
+
+    - name: SMTP_PASSWORD
+      secretName: vaultwarden-smtp
+      key: password
+
+    - name: OIDC_CLIENT_SECRET
+      secretName: vaultwarden-oidc
+      key: client-secret
+
+  # =============================================================================
+  # Configuration du monitoring
+  # =============================================================================
+  monitoring:
+    # Métriques Prometheus
+    prometheus:
+      enabled: true
+
+      # ServiceMonitor
+      serviceMonitor:
+        enabled: true
+        labels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+        interval: 30s
+        path: /metrics
+
+    # Alertes spécifiques à Bitwarden
+    prometheusRules:
+      enabled: true
+      rules:
+        - name: vaultwarden-health
+          rules:
+            - alert: VaultwardenDown
+              expr: up{job="vaultwarden"} == 0
+              for: 1m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Vaultwarden is down"
+                description: "Vaultwarden instance is not responding"
+
+            - alert: VaultwardenHighMemory
+              expr: container_memory_usage_bytes{pod=~"vaultwarden-.*"} / container_spec_memory_limit_bytes > 0.9
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "Vaultwarden high memory usage"
+                description: "Memory usage is above 90%"
+
+            - alert: VaultwardenDatabaseConnections
+              expr: postgresql_stat_database_numbackends{datname="vaultwarden"} > 15
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "High database connections for Vaultwarden"
+                description: "Database connections: {{ $value }}"
+
+  # =============================================================================
+  # Configuration de l'audit et logs
+  # =============================================================================
+  logging:
+    # Envoi des logs vers Loki
+    enabled: true
+    destination: "http://loki-gateway.monitoring:80/loki/api/v1/push"
+
+    # Configuration du format
+    format: "json"
+    level: "info"
+
+    # Labels pour Loki
+    labels:
+      service: "vaultwarden"
+      component: "password-manager"
+      environment: "production"
+
+  # =============================================================================
+  # Configuration de sauvegarde
+  # =============================================================================
+  backup:
+    enabled: true
+
+    # Sauvegarde des données
+    schedule: "0 1 * * *"  # Tous les jours à 1h
+    retention: "30d"
+
+    # Sauvegarde de la base de données
+    database:
+      enabled: true
+      schedule: "0 2 * * *"  # Tous les jours à 2h
+      retention: "90d"
+
+    # Sauvegarde des attachments
+    attachments:
+      enabled: true
+      schedule: "0 3 * * 0"  # Tous les dimanches à 3h
+      retention: "30d"
+
+  # =============================================================================
+  # Configuration RBAC et ServiceAccount
+  # =============================================================================
+  serviceAccount:
+    create: true
+    name: vaultwarden
+    annotations:
+      app.kubernetes.io/name: vaultwarden
+      app.kubernetes.io/component: password-manager
+
+  rbac:
+    create: true
+
+  # =============================================================================
+  # Configuration de mise à l'échelle
+  # =============================================================================
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  # PodDisruptionBudget pour la haute disponibilité
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  # =============================================================================
+  # Configuration de l'affinité
+  # =============================================================================
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - vaultwarden
+            topologyKey: kubernetes.io/hostname
+
+  # =============================================================================
+  # Configuration des tolérations
+  # =============================================================================
+  tolerations: []
+
+  # Sélecteurs de nœuds
+  nodeSelector: {}
+
+# =============================================================================
+# Configuration des politiques de sécurité
+# =============================================================================
+security:
+  # NetworkPolicy pour sécuriser les communications
+  networkPolicy:
+    enabled: true
+
+    # Règles d'ingress
+    ingress:
+      # Permettre Traefik
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              name: traefik
+        ports:
+        - protocol: TCP
+          port: 8080
+
+      # Permettre le monitoring
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+        ports:
+        - protocol: TCP
+          port: 8080
+
+    # Règles d'egress
+    egress:
+      # Permettre PostgreSQL
+      - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+        ports:
+        - protocol: TCP
+          port: 5432
+
+      # Permettre Redis
+      - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+        ports:
+        - protocol: TCP
+          port: 6379
+
+      # Permettre SMTP
+      - to: []
+        ports:
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 465
+
+      # Permettre OIDC avec Keycloak
+      - to:
+        - namespaceSelector:
+            matchLabels:
+              name: keycloak
+        ports:
+        - protocol: TCP
+          port: 8080
+
+      # Permettre DNS
+      - to: []
+        ports:
+        - protocol: UDP
+          port: 53
+
+# =============================================================================
+# Configuration pour l'intégration Traefik
+# =============================================================================
+traefik:
+  ingressRoute:
+    enabled: true
+    host: passwords.clementpnn.com
+    tls:
+      enabled: true
+      secretName: vaultwarden-tls
+
+# =============================================================================
+# Configuration des notifications
+# =============================================================================
+notifications:
+  slack:
+    enabled: false
+    webhookUrl: ""
+    channel: "#security-alerts"
+
+  email:
+    enabled: true
+    smtp:
+      host: "smtp.gmail.com"
+      port: 587
+      username: "infrastructure@clementpnn.com"
+      password: ""  # Configuré via secret
+      from: "infrastructure@clementpnn.com"
+
+# =============================================================================
+# Configuration de développement/debug (désactivé en production)
+# =============================================================================
+debug:
+  enabled: false
+
+# =============================================================================
+# Configuration des tests (désactivé en production)
+# =============================================================================
+tests:
+  enabled: false
+
+# =============================================================================
+# Configuration d'entreprise
+# =============================================================================
+enterprise:
+  # Politiques d'entreprise
+  policies:
+    # Politique de mots de passe
+    passwordPolicy:
+      enabled: true
+      minLength: 12
+      requireUppercase: true
+      requireLowercase: true
+      requireNumbers: true
+      requireSpecialChars: true
+
+    # Politique 2FA obligatoire
+    twoFactorPolicy:
+      enabled: true
+      required: true
+      methods: ["totp", "webauthn"]
+
+    # Politique de session
+    sessionPolicy:
+      timeout: "4h"
+      maxSessions: 5
+
+    # Politique de partage
+    sharingPolicy:
+      allowSend: true
+      allowEmergencyAccess: true
+      maxSendSize: "100MB"
+
+  # Configuration des rôles
+  roles:
+    admin:
+      permissions:
+        - manage_users
+        - manage_policies
+        - view_reports
+        - manage_collections
+
+    manager:
+      permissions:
+        - manage_users
+        - view_reports
+        - manage_collections
+
+    user:
+      permissions:
+        - access_vault
+        - create_collections

@@ -1,0 +1,395 @@
+# =============================================================================
+# Configuration par défaut pour le système de backup automatisé
+# =============================================================================
+#
+# Ce chart déploie un système de backup complet pour l'infrastructure :
+# - CronJob Kubernetes pour backups automatisés
+# - Upload vers stockage S3 compatible
+# - Notifications Slack/Email
+# - Monitoring et alerting intégrés
+# - Sécurité renforcée avec RBAC
+# - Nettoyage automatique des anciens backups
+#
+# =============================================================================
+
+# Configuration globale
+global:
+  # Nom du cluster (utilisé dans les notifications)
+  clusterName: "production"
+
+  # Domaine de base
+  domain: "clementpnn.com"
+
+  # Timezone pour les CronJobs
+  timezone: "Europe/Paris"
+
+# =============================================================================
+# Configuration du backup
+# =============================================================================
+backup:
+  # Activation du système de backup
+  enabled: true
+
+  # Type de backup par défaut (full, config, data)
+  type: "full"
+
+  # Planning des backups (format cron)
+  schedule:
+    # Backup quotidien complet à 2h du matin
+    full: "0 2 * * *"
+    # Backup de config uniquement à 14h (optionnel)
+    config: "0 14 * * *"
+    # Backup des données à 6h et 18h (optionnel)
+    data: "0 6,18 * * *"
+
+  # Configuration de rétention
+  retention:
+    # Nombre de jours de rétention locale
+    local: 3
+    # Nombre de jours de rétention S3
+    remote: 30
+    # Nombre de backups à conserver en historique
+    historyLimit: 5
+
+  # Namespaces à sauvegarder
+  namespaces:
+    - name: "argocd"
+      enabled: true
+      backup_data: true
+    - name: "gitlab"
+      enabled: true
+      backup_data: true
+    - name: "monitoring"
+      enabled: true
+      backup_data: false
+    - name: "secrets"
+      enabled: true
+      backup_data: false
+    - name: "keycloak"
+      enabled: true
+      backup_data: true
+    - name: "traefik"
+      enabled: true
+      backup_data: false
+
+  # Ressources cluster-wide à sauvegarder
+  clusterResources:
+    enabled: true
+    resources:
+      - namespaces
+      - clusterroles
+      - clusterrolebindings
+      - storageclasses
+      - ingressclasses
+      - customresourcedefinitions
+
+# =============================================================================
+# Configuration de stockage S3
+# =============================================================================
+s3:
+  # Activation du stockage S3
+  enabled: true
+
+  # Configuration du bucket
+  bucket: "infra-backups-clementpnn"
+  region: "eu-west-3"
+  prefix: "production/"
+
+  # Classe de stockage S3
+  storageClass: "STANDARD_IA"
+
+  # Chiffrement
+  encryption:
+    enabled: true
+    kmsKeyId: "" # Laisser vide pour utiliser la clé par défaut
+
+  # Configuration du provider S3 (aws, minio, etc.)
+  provider: "aws"
+  endpoint: "" # Pour MinIO ou S3-compatible
+
+  # Vérification d'intégrité
+  verification:
+    enabled: true
+    checksum: "sha256"
+
+# =============================================================================
+# Configuration des notifications
+# =============================================================================
+notifications:
+  # Notifications Slack
+  slack:
+    enabled: true
+    webhook_url: "" # À configurer via secret
+    channel: "#infrastructure"
+    username: "Backup Bot"
+    icon_emoji: ":floppy_disk:"
+
+    # Messages personnalisés
+    messages:
+      success: "✅ Infrastructure backup completed successfully"
+      warning: "⚠️ Infrastructure backup completed with warnings"
+      error: "❌ Infrastructure backup failed"
+
+  # Notifications par email
+  email:
+    enabled: false
+    smtp_server: ""
+    smtp_port: 587
+    username: ""
+    password: "" # À configurer via secret
+    from: "backup@clementpnn.com"
+    to:
+      - "contact@clementpnn.com"
+    subject_prefix: "[BACKUP]"
+
+# =============================================================================
+# Configuration des ressources
+# =============================================================================
+resources:
+  # Ressources pour le conteneur de backup principal
+  backup:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+      ephemeralStorage: 5Gi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+      ephemeralStorage: 10Gi
+
+  # Ressources pour l'init container kubectl
+  kubectl:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+# =============================================================================
+# Configuration de sécurité
+# =============================================================================
+security:
+  # Configuration du ServiceAccount
+  serviceAccount:
+    create: true
+    name: "backup-service-account"
+    annotations: {}
+
+  # Configuration RBAC
+  rbac:
+    create: true
+    # Permissions additionnelles (si nécessaire)
+    extraRules: []
+
+  # Configuration des SecurityContext
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Configuration du conteneur
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+
+  # NetworkPolicy
+  networkPolicy:
+    enabled: true
+    # Autoriser uniquement les connexions nécessaires
+    allowedEgressPorts:
+      - 443 # HTTPS pour S3 et Slack
+      - 53 # DNS
+
+# =============================================================================
+# Configuration du monitoring
+# =============================================================================
+monitoring:
+  # ServiceMonitor pour Prometheus
+  serviceMonitor:
+    enabled: true
+    namespace: "monitoring"
+    labels:
+      app.kubernetes.io/part-of: kube-prometheus-stack
+    interval: 30s
+    path: /metrics
+    port: metrics
+
+  # Règles d'alerte Prometheus
+  prometheusRule:
+    enabled: true
+    namespace: "monitoring"
+    labels:
+      app.kubernetes.io/part-of: kube-prometheus-stack
+
+    # Règles d'alerte personnalisées
+    rules:
+      backupJobFailed:
+        enabled: true
+        severity: critical
+        for: 0m
+
+      backupJobNotRun:
+        enabled: true
+        severity: warning
+        for: 1h
+        threshold: "86400 * 2" # 2 jours
+
+      backupSizeAnomaly:
+        enabled: true
+        severity: warning
+        for: 5m
+        # Alerte si la taille du backup varie de plus de 50%
+        threshold: 0.5
+
+# =============================================================================
+# Configuration des images
+# =============================================================================
+images:
+  # Image AWS CLI pour les backups
+  awscli:
+    repository: amazon/aws-cli
+    tag: "2.15.17"
+    pullPolicy: IfNotPresent
+
+  # Image kubectl pour les init containers
+  kubectl:
+    repository: bitnami/kubectl
+    tag: "1.29.1"
+    pullPolicy: IfNotPresent
+
+  # Configuration du pull des images
+  pullSecrets: []
+
+# =============================================================================
+# Configuration des volumes
+# =============================================================================
+volumes:
+  # Stockage temporaire pour les backups
+  tmpStorage:
+    size: "10Gi"
+    storageClass: "" # Utilise la classe par défaut
+    accessMode: ReadWriteOnce
+
+# =============================================================================
+# Configuration des jobs
+# =============================================================================
+job:
+  # Configuration globale des jobs
+  backoffLimit: 2
+  activeDeadlineSeconds: 7200 # 2 heures maximum
+  ttlSecondsAfterFinished: 86400 # Nettoyer après 24h
+
+  # Politique de concurrence
+  concurrencyPolicy: Forbid
+
+  # Délai de démarrage maximum
+  startingDeadlineSeconds: 3600 # 1 heure
+
+  # Historique des jobs
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 5
+
+# =============================================================================
+# Configuration des secrets
+# =============================================================================
+secrets:
+  # Secrets existants à utiliser (optionnel)
+  existing:
+    aws: ""
+    slack: ""
+    email: ""
+
+  # Création automatique des secrets
+  create: true
+
+  # Données des secrets (à encoder en base64)
+  data:
+    aws_access_key_id: ""
+    aws_secret_access_key: ""
+    slack_webhook_url: ""
+    email_password: ""
+
+# =============================================================================
+# Configuration du logging
+# =============================================================================
+logging:
+  # Niveau de verbosité (debug, info, warn, error)
+  level: "info"
+
+  # Format des logs (json, text)
+  format: "text"
+
+  # Rotation des logs
+  rotation:
+    enabled: true
+    maxSize: "100MB"
+    maxAge: "7d"
+    maxBackups: 5
+
+# =============================================================================
+# Configuration de test
+# =============================================================================
+tests:
+  # Activation des tests Helm
+  enabled: true
+
+  # Image pour les tests
+  image:
+    repository: busybox
+    tag: "1.36"
+    pullPolicy: IfNotPresent
+
+# =============================================================================
+# Configuration de développement
+# =============================================================================
+dev:
+  # Mode développement (active des logs supplémentaires)
+  enabled: false
+
+  # Backup de test (plus fréquent)
+  testSchedule: "*/15 * * * *" # Toutes les 15 minutes
+
+  # Rétention réduite pour les tests
+  testRetention: 1
+
+# =============================================================================
+# Métadonnées et labels
+# =============================================================================
+labels:
+  # Labels communs ajoutés à toutes les ressources
+  common:
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/managed-by: argocd
+
+# Annotations communes
+annotations:
+  common:
+    argocd.argoproj.io/sync-wave: "2"
+
+# =============================================================================
+# Configuration des métriques personnalisées
+# =============================================================================
+metrics:
+  # Port d'exposition des métriques
+  port: 8080
+
+  # Métriques personnalisées à exposer
+  custom:
+    enabled: true
+    # Métriques de taille de backup
+    backup_size_bytes: true
+    # Métriques de durée de backup
+    backup_duration_seconds: true
+    # Métriques de nombre de fichiers
+    backup_files_count: true
+    # Métriques de succès/échec
+    backup_success_total: true
+    backup_failure_total: true

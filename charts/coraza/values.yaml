@@ -1,0 +1,675 @@
+# =============================================================================
+# Configuration Production pour Coraza WAF
+# =============================================================================
+#
+# Web Application Firewall moderne basé sur Coraza Engine avec :
+# - Protection OWASP Top 10
+# - OWASP Core Rule Set (CRS) intégré
+# - Règles personnalisées
+# - Monitoring Prometheus intégré
+# - Intégration Traefik middleware
+# - Logs centralisés vers Loki
+# - Alertes de sécurité temps réel
+# - Haute disponibilité
+#
+# Architecture :
+# - Mode proxy transparent devant les applications
+# - Intégration native avec Traefik
+# - Règles de sécurité configurables via CRDs
+# - Monitoring et alertes intégrés
+#
+# =============================================================================
+
+coraza-proxy:
+  # =============================================================================
+  # Configuration globale
+  # =============================================================================
+  global:
+    imageRegistry: docker.io
+    storageClass: "local-path"
+
+  # =============================================================================
+  # Configuration du WAF Coraza
+  # =============================================================================
+  coraza:
+    enabled: true
+
+    # Image du proxy Coraza
+    image:
+      repository: corazawaf/coraza-proxy
+      tag: "v3.0.1"
+      pullPolicy: IfNotPresent
+
+    # Réplication pour haute disponibilité
+    replicaCount: 3
+
+    # Configuration des ressources
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+        add:
+          - NET_BIND_SERVICE
+      readOnlyRootFilesystem: true
+      seccompProfile:
+        type: RuntimeDefault
+
+    podSecurityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    # Configuration du service
+    service:
+      type: ClusterIP
+      ports:
+        http:
+          port: 80
+          targetPort: 8080
+          protocol: TCP
+        https:
+          port: 443
+          targetPort: 8443
+          protocol: TCP
+        metrics:
+          port: 9090
+          targetPort: 9090
+          protocol: TCP
+
+    # Configuration des sondes de santé
+    livenessProbe:
+      enabled: true
+      httpGet:
+        path: /health
+        port: 8080
+        scheme: HTTP
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+
+    readinessProbe:
+      enabled: true
+      httpGet:
+        path: /ready
+        port: 8080
+        scheme: HTTP
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+    # Configuration Coraza Engine
+    config:
+      # Mode d'opération
+      engine: "On"  # On/Off/DetectionOnly
+
+      # Audit logging
+      audit:
+        enabled: true
+        logLevel: "warn"  # debug/info/warn/error
+        logParts: "ABDEFHIJKZ"
+        logStorage: "/var/log/coraza/audit.log"
+        logFormat: "json"
+
+      # Configuration des règles
+      rules:
+        # Mode de traitement des règles
+        engineMode: "ENABLED"
+
+        # Actions par défaut
+        defaultActions:
+          phase1: "pass,log,auditlog,msg:'Coraza WAF Phase 1'"
+          phase2: "pass,log,auditlog,msg:'Coraza WAF Phase 2'"
+
+      # Configuration de performance
+      performance:
+        # Limite de taille des requêtes
+        requestBodyLimit: "100MB"
+        requestBodyNoFilesLimit: "1MB"
+
+        # Timeout de traitement
+        processingTimeout: "10s"
+
+        # Nombre de threads
+        workerThreads: 4
+
+      # Configuration de logging
+      logging:
+        level: "info"
+        format: "json"
+        destination: "stdout"
+
+    # Variables d'environnement
+    env:
+      - name: CORAZA_LOG_LEVEL
+        value: "info"
+      - name: CORAZA_LOG_FORMAT
+        value: "json"
+      - name: CORAZA_METRICS_ENABLED
+        value: "true"
+      - name: CORAZA_AUDIT_LOG_ENABLED
+        value: "true"
+
+  # =============================================================================
+  # Configuration OWASP Core Rule Set
+  # =============================================================================
+  owasp:
+    # OWASP CRS activation
+    crs:
+      enabled: true
+      version: "v4.0.0"
+
+      # Niveau de paranoïa (1-4, plus élevé = plus strict)
+      paranoiaLevel: 2
+
+      # Seuil d'anomalie (score total pour bloquer)
+      anomalyThreshold:
+        inbound: 5   # Seuil pour les requêtes entrantes
+        outbound: 4  # Seuil pour les réponses sortantes
+
+      # Configuration des règles par catégorie
+      rules:
+        # Protocol violations (920xxx)
+        protocolViolations:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Protocol attack (921xxx)
+        protocolAttacks:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Application attack LFI (930xxx)
+        localFileInclusion:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Application attack RFI (931xxx)
+        remoteFileInclusion:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Application attack RCE (932xxx)
+        remoteCodeExecution:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Application attack PHP (933xxx)
+        phpAttacks:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Application attack XSS (941xxx)
+        crossSiteScripting:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Application attack SQLi (942xxx)
+        sqlInjection:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Application attack Session Fixation (943xxx)
+        sessionFixation:
+          enabled: true
+          paranoiaLevel: 1
+
+        # Application attack Java (944xxx)
+        javaAttacks:
+          enabled: true
+          paranoiaLevel: 2
+
+      # Exclusions (ajustements pour éviter les faux positifs)
+      exclusions:
+        # Exclusions pour applications spécifiques
+        applications:
+          keycloak:
+            enabled: true
+            rules:
+              # Exclure certaines règles pour Keycloak
+              - ruleId: "920230"  # Multipart header value
+                path: "/auth/realms/*/protocol/openid-connect/*"
+              - ruleId: "942100"  # SQL injection
+                path: "/auth/admin/realms/*/users"
+                parameter: "search"
+
+          gitlab:
+            enabled: true
+            rules:
+              # Exclusions pour GitLab API
+              - ruleId: "920470"  # Illegal URL encoding
+                path: "/api/v4/*"
+              - ruleId: "942430"  # SQL injection
+                path: "/api/v4/projects/*/repository/files/*"
+
+          grafana:
+            enabled: true
+            rules:
+              # Exclusions pour Grafana dashboards
+              - ruleId: "941100"  # XSS attack
+                path: "/api/dashboards/*"
+                parameter: "dashboard"
+
+  # =============================================================================
+  # Règles personnalisées
+  # =============================================================================
+  customRules:
+    enabled: true
+
+    # Règles de sécurité spécifiques
+    security:
+      # Bloquer les tentatives de scan
+      - id: "1001"
+        phase: 1
+        rule: |
+          SecRule REQUEST_HEADERS:User-Agent "@detectSQLi" \
+            "id:1001,\
+            phase:1,\
+            block,\
+            msg:'SQL Injection Attack in User-Agent',\
+            logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}',\
+            tag:'attack-sqli',\
+            tag:'OWASP_CRS',\
+            severity:'CRITICAL'"
+
+      # Bloquer les outils de scan automatisés
+      - id: "1002"
+        phase: 1
+        rule: |
+          SecRule REQUEST_HEADERS:User-Agent "@pm nikto nmap sqlmap burp zaproxy" \
+            "id:1002,\
+            phase:1,\
+            block,\
+            msg:'Security Scanner Detected',\
+            logdata:'Scanner: %{MATCHED_VAR}',\
+            tag:'attack-reputation-scanner',\
+            severity:'WARNING'"
+
+      # Protection contre les attaques par force brute
+      - id: "1003"
+        phase: 2
+        rule: |
+          SecRule IP:bf_counter "@gt 10" \
+            "id:1003,\
+            phase:2,\
+            block,\
+            expirevar:ip.bf_counter=300,\
+            msg:'Brute Force Attack Detected',\
+            tag:'attack-brute-force',\
+            severity:'WARNING'"
+
+      # Rate limiting basique
+      - id: "1004"
+        phase: 1
+        rule: |
+          SecAction "id:1004,\
+            phase:1,\
+            initcol:ip=%{REMOTE_ADDR},\
+            setvar:ip.requests_per_minute=+1,\
+            deprecatevar:ip.requests_per_minute=60,\
+            pass,\
+            nolog"
+
+      # Bloquer si trop de requêtes par minute
+      - id: "1005"
+        phase: 1
+        rule: |
+          SecRule IP:requests_per_minute "@gt 100" \
+            "id:1005,\
+            phase:1,\
+            deny,\
+            status:429,\
+            msg:'Rate limit exceeded',\
+            tag:'attack-dos',\
+            severity:'WARNING'"
+
+    # Règles de conformité
+    compliance:
+      # Forcer HTTPS
+      - id: "2001"
+        phase: 1
+        rule: |
+          SecRule REQUEST_SCHEME "!@streq https" \
+            "id:2001,\
+            phase:1,\
+            redirect:https://%{REQUEST_HEADERS.Host}%{REQUEST_URI},\
+            msg:'Redirect HTTP to HTTPS',\
+            tag:'compliance-https'"
+
+      # Headers de sécurité obligatoires
+      - id: "2002"
+        phase: 3
+        rule: |
+          SecAction "id:2002,\
+            phase:3,\
+            setenv:SECURITY_HEADERS=1,\
+            pass,\
+            nolog"
+
+    # Règles géographiques (optionnel)
+    geographical:
+      enabled: false
+      rules:
+        # Bloquer certains pays (exemple)
+        - id: "3001"
+          phase: 1
+          rule: |
+            SecRule REMOTE_ADDR "@geoLookup" "id:3001,phase:1,chain,drop,msg:'Blocked Country'"
+            SecRule GEO:COUNTRY_CODE "@pm CN RU KP" ""
+
+  # =============================================================================
+  # Configuration du monitoring
+  # =============================================================================
+  monitoring:
+    # Métriques Prometheus
+    prometheus:
+      enabled: true
+
+      # Configuration de l'exporter
+      exporter:
+        image:
+          repository: corazawaf/prometheus-exporter
+          tag: "v0.1.0"
+          pullPolicy: IfNotPresent
+
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+
+        # Port pour les métriques
+        port: 9090
+        path: /metrics
+
+        # Métriques à exposer
+        metrics:
+          - coraza_requests_total
+          - coraza_requests_blocked_total
+          - coraza_rules_matched_total
+          - coraza_processing_time_seconds
+          - coraza_anomaly_score_histogram
+          - coraza_rule_execution_time_seconds
+
+      # ServiceMonitor pour Prometheus
+      serviceMonitor:
+        enabled: true
+        labels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+        interval: 30s
+        path: /metrics
+
+    # Envoi des logs vers Loki
+    logging:
+      enabled: true
+      destination: "http://loki-gateway.monitoring:80/loki/api/v1/push"
+
+      # Configuration du log shipper
+      logShipper:
+        enabled: true
+
+        # Types de logs à envoyer
+        logTypes:
+          - access
+          - audit
+          - error
+          - security
+
+        # Format des logs
+        format: "json"
+
+        # Labels pour Loki
+        labels:
+          service: "coraza-waf"
+          component: "security"
+          environment: "production"
+
+  # =============================================================================
+  # Configuration des alertes
+  # =============================================================================
+  alerting:
+    enabled: true
+
+    # Règles d'alerte Prometheus
+    prometheusRules:
+      - name: coraza-waf-security
+        rules:
+          - alert: CorazaHighBlockRate
+            expr: rate(coraza_requests_blocked_total[5m]) > 10
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High WAF block rate detected"
+              description: "Coraza WAF is blocking {{ $value }} requests per second"
+
+          - alert: CorazaSQLInjectionAttack
+            expr: increase(coraza_rules_matched_total{rule_tag="attack-sqli"}[1m]) > 0
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: "SQL Injection attack detected"
+              description: "SQL injection attempt blocked by Coraza WAF"
+
+          - alert: CorazaXSSAttack
+            expr: increase(coraza_rules_matched_total{rule_tag="attack-xss"}[1m]) > 0
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: "XSS attack detected"
+              description: "Cross-site scripting attempt blocked by Coraza WAF"
+
+          - alert: CorazaBruteForceAttack
+            expr: increase(coraza_rules_matched_total{rule_tag="attack-brute-force"}[5m]) > 5
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Brute force attack detected"
+              description: "Multiple brute force attempts detected"
+
+          - alert: CorazaDOSAttack
+            expr: increase(coraza_rules_matched_total{rule_tag="attack-dos"}[1m]) > 20
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Potential DoS attack detected"
+              description: "High rate of blocked requests may indicate DoS attack"
+
+          - alert: CorazaHighLatency
+            expr: coraza_processing_time_seconds > 0.5
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High WAF processing latency"
+              description: "Coraza processing time is {{ $value }} seconds"
+
+  # =============================================================================
+  # Configuration Traefik Middleware
+  # =============================================================================
+  traefik:
+    # Middleware Traefik pour intégration
+    middleware:
+      enabled: true
+
+      # Configuration du middleware
+      config:
+        # Redirection vers Coraza
+        forwardAuth:
+          address: "http://coraza-proxy.security:80/auth"
+          trustForwardHeader: true
+          authResponseHeaders:
+            - "X-Coraza-Status"
+            - "X-Coraza-Rule-Id"
+            - "X-Coraza-Message"
+
+    # IngressRoute pour interface d'administration (optionnel)
+    ingressRoute:
+      enabled: true
+      host: waf.clementpnn.com
+      tls:
+        enabled: true
+        secretName: coraza-waf-tls
+
+  # =============================================================================
+  # Configuration RBAC
+  # =============================================================================
+  rbac:
+    create: true
+
+    # Permissions pour le contrôleur
+    rules:
+      - apiGroups: [""]
+        resources: ["secrets", "configmaps"]
+        verbs: ["get", "list", "watch"]
+
+      - apiGroups: ["security.coraza.org"]
+        resources: ["corazapolicies", "corazarules"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Configuration du ServiceAccount
+  serviceAccount:
+    create: true
+    name: coraza-waf
+    annotations:
+      app.kubernetes.io/name: coraza-waf
+      app.kubernetes.io/component: security
+
+  # =============================================================================
+  # Configuration de mise à l'échelle
+  # =============================================================================
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  # PodDisruptionBudget
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+  # =============================================================================
+  # Configuration de sécurité réseau
+  # =============================================================================
+  networkPolicy:
+    enabled: true
+
+    # Règles d'ingress
+    ingress:
+      # Permettre le trafic depuis Traefik
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              name: traefik
+        ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8443
+
+      # Permettre le monitoring depuis Prometheus
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+        ports:
+        - protocol: TCP
+          port: 9090
+
+    # Règles d'egress
+    egress:
+      # Permettre l'accès vers les applications protégées
+      - to: []
+        ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+
+      # Permettre l'accès DNS
+      - to: []
+        ports:
+        - protocol: UDP
+          port: 53
+
+  # =============================================================================
+  # Configuration de persistence
+  # =============================================================================
+  persistence:
+    # Logs d'audit
+    audit:
+      enabled: true
+      size: 10Gi
+      storageClass: "local-path"
+      accessMode: ReadWriteOnce
+      mountPath: /var/log/coraza
+
+    # Configuration des règles
+    config:
+      enabled: true
+      size: 1Gi
+      storageClass: "local-path"
+      accessMode: ReadWriteOnce
+      mountPath: /etc/coraza
+
+  # =============================================================================
+  # Configuration de sauvegarde
+  # =============================================================================
+  backup:
+    enabled: true
+    schedule: "0 1 * * *"  # Tous les jours à 1h
+    retention: "30d"       # Conserver 30 jours
+
+    # Éléments à sauvegarder
+    items:
+      - audit_logs
+      - configuration
+      - custom_rules
+
+  # =============================================================================
+  # Configuration de test et validation
+  # =============================================================================
+  testing:
+    enabled: false  # Désactivé en production
+
+    # Tests de sécurité automatiques
+    securityTests:
+      enabled: false
+      schedule: "0 3 * * 0"  # Tous les dimanches à 3h
+
+      # Types de tests
+      tests:
+        - xss_payloads
+        - sqli_payloads
+        - rce_payloads
+        - lfi_payloads
+
+# =============================================================================
+# Configuration de développement/debug (désactivé en production)
+# =============================================================================
+debug:
+  enabled: false
+  logLevel: "info"
+  verboseLogging: false

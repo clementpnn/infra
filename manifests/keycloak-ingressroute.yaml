@@ -1,0 +1,477 @@
+# =============================================================================
+# IngressRoutes Traefik Production pour Keycloak
+# =============================================================================
+#
+# Configuration production pour l'exposition de Keycloak via Traefik avec :
+# - HTTPS automatique via Cert-Manager (Let's Encrypt)
+# - Redirection HTTP vers HTTPS obligatoire
+# - Headers de sécurité renforcés pour Keycloak
+# - Rate limiting contre les attaques par force brute
+# - Gestion d'erreurs personnalisées
+# - Optimisations pour sessions et cookies Keycloak
+#
+# =============================================================================
+
+---
+# IngressRoute principale HTTPS pour Keycloak
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: keycloak-https
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: infrastructure
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`auth.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: keycloak
+          port: 8080
+          scheme: http
+      middlewares:
+        - name: keycloak-security-headers
+        - name: keycloak-rate-limit
+        - name: keycloak-auth-headers
+  tls:
+    secretName: keycloak-tls
+    domains:
+      - main: auth.clementpnn.com
+
+---
+# IngressRoute pour redirection HTTP vers HTTPS
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: keycloak-http-redirect
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: infrastructure
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`auth.clementpnn.com`)
+      kind: Rule
+      services:
+        - name: keycloak
+          port: 8080
+      middlewares:
+        - name: https-redirect
+
+---
+# Middleware pour redirection HTTPS obligatoire
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: middleware
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+
+---
+# Middleware pour headers de sécurité renforcés
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: keycloak-security-headers
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: middleware
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: https
+      X-Forwarded-Port: "443"
+      X-Forwarded-For: ""
+      X-Real-IP: ""
+    customResponseHeaders:
+      # Headers de sécurité standards
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: SAMEORIGIN
+      X-XSS-Protection: "1; mode=block"
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+      Referrer-Policy: strict-origin-when-cross-origin
+      Permissions-Policy: "camera=(), microphone=(), geolocation=(), payment=()"
+
+      # Headers spécifiques pour Keycloak
+      Cache-Control: "no-cache, no-store, must-revalidate, max-age=0"
+      Pragma: "no-cache"
+      Expires: "0"
+
+      # CSP adapté pour Keycloak
+      Content-Security-Policy: >-
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' 'unsafe-eval';
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: https:;
+        font-src 'self' data:;
+        connect-src 'self';
+        form-action 'self';
+        frame-ancestors 'self';
+        object-src 'none';
+        base-uri 'self';
+        upgrade-insecure-requests
+
+---
+# Middleware pour headers d'authentification Keycloak
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: keycloak-auth-headers
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: middleware
+spec:
+  headers:
+    customRequestHeaders:
+      # Headers pour Keycloak proxy mode
+      X-Forwarded-Host: "auth.clementpnn.com"
+      X-Forwarded-Server: "traefik"
+      Host: "auth.clementpnn.com"
+
+---
+# Middleware de rate limiting contre les attaques par force brute
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: keycloak-rate-limit
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: middleware
+spec:
+  rateLimit:
+    period: 1m
+    burst: 100
+    average: 50
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+
+---
+# Middleware pour gestion d'erreurs personnalisées
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: keycloak-errors
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: middleware
+spec:
+  errors:
+    status:
+      - "500-599"
+    service:
+      name: keycloak-error-pages
+      port: 8080
+    query: "/{status}.html"
+
+---
+# Service pour pages d'erreur personnalisées
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-error-pages
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak-error-pages
+    app.kubernetes.io/component: error-handler
+spec:
+  selector:
+    app: keycloak-error-pages
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+
+---
+# Deployment pour pages d'erreur
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-error-pages
+  namespace: keycloak
+  labels:
+    app: keycloak-error-pages
+    app.kubernetes.io/name: keycloak-error-pages
+    app.kubernetes.io/component: error-handler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-error-pages
+  template:
+    metadata:
+      labels:
+        app: keycloak-error-pages
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25-alpine
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: error-pages
+              mountPath: /usr/share/nginx/html
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 101
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: error-pages
+          configMap:
+            name: keycloak-error-pages
+        - name: nginx-config
+          configMap:
+            name: keycloak-nginx-config
+      securityContext:
+        fsGroup: 101
+
+---
+# ConfigMap pour la configuration nginx
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-nginx-config
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak-error-pages
+    app.kubernetes.io/component: config
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log notice;
+    pid /tmp/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+        sendfile on;
+        keepalive_timeout 65;
+
+        server {
+            listen 8080;
+            server_name localhost;
+            root /usr/share/nginx/html;
+            index index.html;
+
+            location / {
+                try_files $uri $uri.html =404;
+            }
+
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+        }
+    }
+
+---
+# ConfigMap pour les pages d'erreur personnalisées
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-error-pages
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak-error-pages
+    app.kubernetes.io/component: config
+data:
+  500.html: |
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Service d'Authentification Indisponible</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            }
+            .container {
+                background: rgba(255,255,255,0.1); padding: 3rem; border-radius: 20px;
+                backdrop-filter: blur(20px); text-align: center; max-width: 500px; margin: 2rem;
+                box-shadow: 0 25px 50px rgba(0,0,0,0.3);
+            }
+            h1 { font-size: 2.5rem; margin-bottom: 1rem; font-weight: 600; }
+            p { font-size: 1.1rem; line-height: 1.6; margin-bottom: 1rem; opacity: 0.9; }
+            .error-code { font-family: monospace; font-size: 0.9rem; opacity: 0.7; margin-top: 2rem; }
+            .retry-btn {
+                display: inline-block; margin-top: 2rem; padding: 12px 24px;
+                background: rgba(255,255,255,0.2); color: white; text-decoration: none;
+                border-radius: 10px; transition: all 0.3s ease; border: 1px solid rgba(255,255,255,0.3);
+            }
+            .retry-btn:hover { background: rgba(255,255,255,0.3); transform: translateY(-2px); }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔐 Service d'Authentification Indisponible</h1>
+            <p>Notre service d'authentification Keycloak rencontre actuellement des difficultés techniques.</p>
+            <p>Nos équipes travaillent activement pour résoudre ce problème.</p>
+            <a href="/" class="retry-btn">Réessayer</a>
+            <div class="error-code">Erreur 500 - Erreur interne du serveur</div>
+        </div>
+    </body>
+    </html>
+
+  502.html: |
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Service d'Authentification Non Accessible</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+                color: white; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            }
+            .container {
+                background: rgba(255,255,255,0.1); padding: 3rem; border-radius: 20px;
+                backdrop-filter: blur(20px); text-align: center; max-width: 500px; margin: 2rem;
+                box-shadow: 0 25px 50px rgba(0,0,0,0.3);
+            }
+            h1 { font-size: 2.5rem; margin-bottom: 1rem; font-weight: 600; }
+            p { font-size: 1.1rem; line-height: 1.6; margin-bottom: 1rem; opacity: 0.9; }
+            .error-code { font-family: monospace; font-size: 0.9rem; opacity: 0.7; margin-top: 2rem; }
+            .retry-btn {
+                display: inline-block; margin-top: 2rem; padding: 12px 24px;
+                background: rgba(255,255,255,0.2); color: white; text-decoration: none;
+                border-radius: 10px; transition: all 0.3s ease; border: 1px solid rgba(255,255,255,0.3);
+            }
+            .retry-btn:hover { background: rgba(255,255,255,0.3); transform: translateY(-2px); }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🚫 Service d'Authentification Inaccessible</h1>
+            <p>Impossible de joindre le service d'authentification Keycloak.</p>
+            <p>Le service pourrait être en cours de redémarrage.</p>
+            <a href="/" class="retry-btn">Réessayer</a>
+            <div class="error-code">Erreur 502 - Bad Gateway</div>
+        </div>
+    </body>
+    </html>
+
+  503.html: |
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Service d'Authentification en Maintenance</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #ffa726 0%, #ff7043 100%);
+                color: white; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            }
+            .container {
+                background: rgba(255,255,255,0.1); padding: 3rem; border-radius: 20px;
+                backdrop-filter: blur(20px); text-align: center; max-width: 500px; margin: 2rem;
+                box-shadow: 0 25px 50px rgba(0,0,0,0.3);
+            }
+            h1 { font-size: 2.5rem; margin-bottom: 1rem; font-weight: 600; }
+            p { font-size: 1.1rem; line-height: 1.6; margin-bottom: 1rem; opacity: 0.9; }
+            .error-code { font-family: monospace; font-size: 0.9rem; opacity: 0.7; margin-top: 2rem; }
+            .status {
+                background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;
+                margin: 2rem 0; font-size: 0.95rem;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔧 Maintenance en Cours</h1>
+            <p>Le service d'authentification Keycloak est actuellement en maintenance programmée.</p>
+            <div class="status">
+                <strong>Statut :</strong> Maintenance planifiée<br>
+                <strong>Durée estimée :</strong> 15-30 minutes
+            </div>
+            <p>Nous revenons bientôt avec des améliorations de sécurité !</p>
+            <div class="error-code">Erreur 503 - Service temporairement indisponible</div>
+        </div>
+    </body>
+    </html>
+
+---
+# Certificat SSL explicite pour Keycloak
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-tls-certificate
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: keycloak-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - auth.clementpnn.com
+  renewBefore: 720h  # 30 jours avant expiration
+  duration: 2160h    # 90 jours
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  subject:
+    organizations:
+      - "Infrastructure Clement"
+    organizationalUnits:
+      - "Authentication Services"
+    countries:
+      - "FR"

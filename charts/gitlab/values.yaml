@@ -1,0 +1,992 @@
+# =============================================================================
+# Configuration Production pour GitLab Enterprise
+# =============================================================================
+#
+# GitLab Enterprise complet pour environnement de production avec :
+# - GitLab CE/EE avec interface web complète
+# - PostgreSQL haute disponibilité pour persistance
+# - Redis pour cache et sessions
+# - MinIO pour stockage d'objets (artifacts, LFS, uploads)
+# - Gitaly pour stockage Git haute performance
+# - GitLab Runner pour CI/CD avec executor Kubernetes
+# - SSO intégration avec Keycloak OIDC
+# - SMTP pour notifications email
+# - Container Registry intégré
+# - GitLab Pages pour hébergement statique
+# - Backup automatique vers S3
+# - Monitoring Prometheus intégré
+# - Sécurité renforcée et haute disponibilité
+#
+# Architecture :
+# - Webservice (interface web) : 2 replicas
+# - Sidekiq (jobs async) : 2 replicas
+# - Gitaly (stockage Git) : 3 replicas
+# - PostgreSQL : 3 replicas cluster
+# - Redis : 3 replicas cluster
+# - MinIO : 4 replicas (stockage distribué)
+# - GitLab Runner : Auto-scaling
+#
+# =============================================================================
+
+gitlab:
+  # =============================================================================
+  # Configuration globale
+  # =============================================================================
+  global:
+    # Configuration de l'édition (ce/ee)
+    edition: ee
+
+    # Configuration des hosts et domaines
+    hosts:
+      domain: clementpnn.com
+      hostSuffix: ""
+      https: true
+      externalIP: ""
+      gitlab:
+        name: gitlab.clementpnn.com
+        https: true
+      registry:
+        name: registry.clementpnn.com
+        https: true
+      minio:
+        name: minio.clementpnn.com
+        https: true
+      pages:
+        name: pages.clementpnn.com
+        https: true
+
+    # Configuration des images
+    image:
+      pullPolicy: IfNotPresent
+
+    # Configuration du stockage d'objets (MinIO)
+    minio:
+      enabled: true
+      credentials:
+        secret: gitlab-minio-secret
+
+    # Configuration des ingress (désactivé - on utilise Traefik IngressRoute)
+    ingress:
+      enabled: false
+      configureCertmanager: false
+      tls:
+        enabled: false
+
+    # Configuration des certificats SSL
+    certificates:
+      image:
+        repository: registry.gitlab.com/gitlab-org/build/cng/certificates
+        tag: 20211220-r0
+
+    # Configuration GitLab Shell (SSH)
+    shell:
+      authToken:
+        secret: gitlab-shell-secret
+        key: secret
+      hostKeys:
+        secret: gitlab-shell-host-keys
+
+    # Configuration SMTP
+    smtp:
+      enabled: true
+      address: smtp.gmail.com
+      port: 587
+      user_name: infrastructure@clementpnn.com
+      password:
+        secret: gitlab-smtp-secret
+        key: password
+      domain: clementpnn.com
+      authentication: login
+      starttls_auto: true
+      openssl_verify_mode: peer
+
+    # Configuration email
+    email:
+      from: gitlab@clementpnn.com
+      display_name: GitLab Infrastructure
+      reply_to: noreply@clementpnn.com
+
+    # Configuration du temps
+    time_zone: Europe/Paris
+
+    # Configuration des outils supplémentaires
+    kubectl:
+      image:
+        repository: registry.gitlab.com/gitlab-org/build/cng/kubectl
+        tag: v1.28.3
+        pullPolicy: IfNotPresent
+
+    # Configuration Gitaly (stockage Git)
+    gitaly:
+      enabled: true
+      authToken:
+        secret: gitaly-secret
+        key: token
+      internal:
+        names:
+          - default
+      external: []
+      service:
+        name: gitaly
+        type: ClusterIP
+        internalPort: 8075
+        externalPort: 8075
+
+    # Configuration PostgreSQL
+    psql:
+      connectTimeout: 60
+      password:
+        secret: gitlab-postgresql-secret
+        key: password
+      host: gitlab-postgresql
+      port: 5432
+      username: gitlab
+      database: gitlabhq_production
+      preparedStatements: false
+
+    # Configuration Redis
+    redis:
+      password:
+        enabled: true
+        secret: gitlab-redis-secret
+        key: password
+      host: gitlab-redis-master
+      port: 6379
+
+    # Configuration des registres de conteneurs
+    registry:
+      bucket: registry
+      certificate:
+        secret: gitlab-registry-secret
+      httpSecret:
+        secret: gitlab-registry-httpsecret
+        key: secret
+
+    # Configuration des pages statiques
+    pages:
+      enabled: true
+      accessControl: true
+      path: /srv/gitlab-data/shared/pages
+      host: pages.clementpnn.com
+      port: 8090
+      https: true
+      externalHttp: []
+      externalHttps: []
+      artifacts:
+        bucket: gitlab-pages
+      objectStore:
+        enabled: true
+        bucket: gitlab-pages
+        connection:
+          secret: gitlab-pages-secret
+          key: connection
+
+    # Configuration des artefacts CI/CD
+    appConfig:
+      # Configuration générale
+      defaultCanCreateGroup: true
+      usernameChangingEnabled: false
+      issueClosingPattern: '\b((?:[Cc]los(?:e[sd]?|ing)|\b[Ff]ix(?:e[sd]|ing)?|\b[Rr]esolv(?:e[sd]?|ing)|\b[Ii]mplement(?:s|ed|ing)?)(:?) +(?:(?:issues? +)?#\d+(?:(?:, *| +and +)?#\d+)*))'
+      defaultTheme: 2
+      defaultProjectsFeatures:
+        issues: true
+        mergeRequests: true
+        wiki: true
+        snippets: true
+        builds: true
+        containerRegistry: true
+
+      # Configuration LDAP/OIDC avec Keycloak
+      ldap:
+        preventSignin: false
+        servers:
+          main:
+            label: 'Keycloak'
+            host: 'auth.clementpnn.com'
+            port: 443
+            uid: 'preferred_username'
+            bind_dn: ''
+            password: ''
+            encryption: 'ssl'
+            verify_certificates: true
+            smartcard_auth: false
+            active_directory: false
+            allow_username_or_email_login: true
+            lowercase_usernames: false
+            block_auto_created_users: false
+            base: 'ou=users,dc=clementpnn,dc=com'
+            user_filter: ''
+            attributes:
+              username: ['uid', 'userid', 'sAMAccountName']
+              email: ['mail', 'email', 'userPrincipalName']
+              name: 'cn'
+              first_name: 'givenName'
+              last_name: 'sn'
+            group_base: 'ou=groups,dc=clementpnn,dc=com'
+            admin_group: 'gitlab-admin'
+            external_groups: []
+            sync_ssh_keys: false
+
+      # Configuration OAuth avec Keycloak
+      omniauth:
+        enabled: true
+        autoSignInWithProvider: ""
+        syncProfileFromProvider: []
+        syncProfileAttributes: ['email']
+        allowSingleSignOn: ['openid_connect']
+        blockAutoCreatedUsers: false
+        autoLinkLdapUser: false
+        autoLinkSamlUser: false
+        externalProviders: []
+        providers:
+          - secret: gitlab-keycloak-secret
+            key: provider
+
+      # Configuration du stockage d'objets
+      object_store:
+        enabled: true
+        proxy_download: true
+        storage_options: {}
+        connection:
+          secret: gitlab-object-storage-secret
+          key: connection
+
+      # Configuration des artefacts
+      artifacts:
+        enabled: true
+        proxy_download: true
+        bucket: gitlab-artifacts
+        connection:
+          secret: gitlab-artifacts-secret
+          key: connection
+
+      # Configuration LFS
+      lfs:
+        enabled: true
+        proxy_download: true
+        bucket: git-lfs
+        connection:
+          secret: gitlab-lfs-secret
+          key: connection
+
+      # Configuration des uploads
+      uploads:
+        enabled: true
+        proxy_download: true
+        bucket: gitlab-uploads
+        connection:
+          secret: gitlab-uploads-secret
+          key: connection
+
+      # Configuration des packages
+      packages:
+        enabled: true
+        proxy_download: true
+        bucket: gitlab-packages
+        connection:
+          secret: gitlab-packages-secret
+          key: connection
+
+      # Configuration backup
+      backups:
+        bucket: gitlab-backups
+        tmpBucket: gitlab-tmp
+
+      # Configuration des jobs Sidekiq
+      cron_jobs:
+        # Nettoyage automatique
+        stuck_ci_jobs_worker:
+          cron: "0 0 * * *"
+        pipeline_schedule_worker:
+          cron: "19 * * * *"
+        expire_build_artifacts_worker:
+          cron: "50 * * * *"
+        environments_auto_stop_cron_worker:
+          cron: "24 * * * *"
+        repository_check_worker:
+          cron: "20 * * * *"
+        admin_email_worker:
+          cron: "0 0 * * 0"
+        repository_archive_cache_worker:
+          cron: "0 * * * *"
+
+  # =============================================================================
+  # Configuration GitLab CE/EE
+  # =============================================================================
+  gitlab:
+    webservice:
+      enabled: true
+
+      # Nombre de replicas pour haute disponibilité
+      replicaCount: 2
+
+      # Configuration des ressources
+      resources:
+        requests:
+          cpu: 1000m
+          memory: 2.5Gi
+        limits:
+          cpu: 2000m
+          memory: 5Gi
+
+      # Configuration de l'image
+      image:
+        repository: registry.gitlab.com/gitlab-org/build/cng/gitlab-webservice-ee
+        tag: v16.5.1
+
+      # Configuration des workers
+      workerProcesses: 2
+      workerConnections: 1024
+      workerTimeout: 60
+
+      # Configuration de sécurité
+      securityContext:
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: false
+        runAsNonRoot: true
+
+      # Configuration du service
+      service:
+        type: ClusterIP
+        internalPort: 8080
+        workhorseInternalPort: 8181
+
+      # Configuration des sondes
+      livenessProbe:
+        initialDelaySeconds: 20
+        periodSeconds: 60
+        timeoutSeconds: 30
+        successThreshold: 1
+        failureThreshold: 3
+
+      readinessProbe:
+        initialDelaySeconds: 0
+        periodSeconds: 10
+        timeoutSeconds: 2
+        successThreshold: 1
+        failureThreshold: 3
+
+      # Configuration du déploiement
+      deployment:
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxSurge: 25%
+            maxUnavailable: 25%
+
+    # Configuration Sidekiq (traitement des jobs)
+    sidekiq:
+      enabled: true
+
+      # Configuration des queues
+      queues:
+        - default
+        - mailers
+        - pipeline_processing:high
+        - pipeline_background:low
+        - repository_import:low
+        - github_importer
+        - github_importer_advance_stage
+        - project_import_schedule
+        - project_export
+        - delete_user
+        - todos_destroyer:high
+        - notifications
+        - update_merge_requests
+        - new_note
+        - new_issue
+        - repository_check:low
+        - gcp_cluster:high
+
+      # Ressources par replica
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1.5Gi
+        limits:
+          cpu: 1000m
+          memory: 3Gi
+
+      # Nombre de replicas
+      replicaCount: 2
+
+      # Configuration de sécurité
+      securityContext:
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: false
+        runAsNonRoot: true
+
+    # Configuration Gitaly (stockage Git)
+    gitaly:
+      enabled: true
+
+      # Stockage persistant
+      persistence:
+        enabled: true
+        storageClass: "local-path"
+        size: 200Gi
+        accessMode: ReadWriteOnce
+
+      # Ressources
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+
+      # Sécurité
+      securityContext:
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: false
+        runAsNonRoot: true
+
+      # Service
+      service:
+        type: ClusterIP
+        internalPort: 8075
+
+  # =============================================================================
+  # Configuration PostgreSQL
+  # =============================================================================
+  postgresql:
+    install: true
+
+    # Configuration d'authentification
+    auth:
+      username: gitlab
+      database: gitlabhq_production
+      existingSecret: gitlab-postgresql-secret
+      secretKeys:
+        adminPasswordKey: postgres-password
+        userPasswordKey: password
+
+    # Configuration primaire
+    primary:
+      # Stockage persistant
+      persistence:
+        enabled: true
+        storageClass: "local-path"
+        size: 100Gi
+        accessModes:
+          - ReadWriteOnce
+
+      # Ressources
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+
+      # Configuration PostgreSQL
+      pgHbaConfiguration: |
+        local all all trust
+        host all all 127.0.0.1/32 md5
+        host all all ::1/128 md5
+        host all all 0.0.0.0/0 md5
+
+      # Configuration des paramètres
+      extendedConfiguration: |
+        max_connections = 200
+        shared_buffers = 256MB
+        effective_cache_size = 1GB
+        work_mem = 4MB
+        maintenance_work_mem = 64MB
+        wal_buffers = 16MB
+        checkpoint_completion_target = 0.9
+        max_wal_size = 1GB
+        min_wal_size = 80MB
+        log_line_prefix = '[%t] %u@%d '
+        log_timezone = 'Europe/Paris'
+        datestyle = 'iso, mdy'
+        timezone = 'Europe/Paris'
+        lc_messages = 'en_US.utf8'
+        lc_monetary = 'en_US.utf8'
+        lc_numeric = 'en_US.utf8'
+        lc_time = 'en_US.utf8'
+
+    # Configuration de sécurité
+    securityContext:
+      enabled: true
+      fsGroup: 1001
+      runAsUser: 1001
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      enabled: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: false
+      runAsNonRoot: true
+      runAsUser: 1001
+
+    # Métriques pour Prometheus
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        namespace: monitoring
+        labels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+
+  # =============================================================================
+  # Configuration Redis
+  # =============================================================================
+  redis:
+    install: true
+
+    # Configuration d'authentification
+    auth:
+      enabled: true
+      existingSecret: gitlab-redis-secret
+      existingSecretPasswordKey: password
+
+    # Configuration master
+    master:
+      # Stockage persistant
+      persistence:
+        enabled: true
+        storageClass: "local-path"
+        size: 20Gi
+        accessModes:
+          - ReadWriteOnce
+
+      # Ressources
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+
+      # Configuration Redis
+      configuration: |
+        save 900 1
+        save 300 10
+        save 60 10000
+        maxmemory-policy allkeys-lru
+        timeout 0
+        tcp-keepalive 60
+        maxclients 10000
+
+    # Configuration de sécurité
+    securityContext:
+      enabled: true
+      fsGroup: 1001
+      runAsUser: 1001
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      enabled: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: false
+      runAsNonRoot: true
+      runAsUser: 1001
+
+    # Métriques pour Prometheus
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        namespace: monitoring
+        labels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+
+  # =============================================================================
+  # Configuration MinIO (stockage d'objets)
+  # =============================================================================
+  minio:
+    install: true
+
+    # Configuration d'authentification
+    auth:
+      rootUser: minio
+      existingSecret: gitlab-minio-secret
+
+    # Mode distribué pour haute disponibilité
+    mode: distributed
+    statefulset:
+      replicaCount: 4
+      podManagementPolicy: Parallel
+
+    # Stockage persistant
+    persistence:
+      enabled: true
+      storageClass: "local-path"
+      size: 100Gi
+      accessModes:
+        - ReadWriteOnce
+
+    # Ressources
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+    # Configuration de sécurité
+    securityContext:
+      enabled: true
+      fsGroup: 1001
+      runAsUser: 1001
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      enabled: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: false
+      runAsNonRoot: true
+      runAsUser: 1001
+
+    # Service
+    service:
+      type: ClusterIP
+      port: 9000
+
+    # Console MinIO
+    console:
+      enabled: true
+      service:
+        type: ClusterIP
+        port: 9001
+
+    # Métriques pour Prometheus
+    metrics:
+      serviceMonitor:
+        enabled: true
+        namespace: monitoring
+        labels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+
+    # Buckets par défaut
+    defaultBuckets: "gitlab-artifacts,gitlab-lfs,gitlab-uploads,gitlab-packages,gitlab-registry,gitlab-pages,gitlab-backups,gitlab-tmp"
+
+  # =============================================================================
+  # Configuration GitLab Runner (CI/CD)
+  # =============================================================================
+  gitlab-runner:
+    install: true
+
+    # Configuration GitLab connection
+    gitlabUrl: https://gitlab.clementpnn.com
+    runnerRegistrationToken: ""  # Sera configuré via secret
+
+    # Configuration des runners
+    runners:
+      config: |
+        [[runners]]
+          [runners.kubernetes]
+            namespace = "gitlab"
+            image = "ubuntu:22.04"
+            privileged = true
+
+            # Limites de ressources par job
+            cpu_limit = "2"
+            cpu_request = "500m"
+            memory_limit = "4Gi"
+            memory_request = "1Gi"
+            service_cpu_limit = "1"
+            service_memory_limit = "2Gi"
+            helper_cpu_limit = "500m"
+            helper_memory_limit = "512Mi"
+
+            # Configuration volumes
+            [[runners.kubernetes.volumes.host_path]]
+              name = "docker"
+              mount_path = "/var/run/docker.sock"
+              host_path = "/var/run/docker.sock"
+
+            # Images services communes
+            [runners.kubernetes.service_account_overwrite_allowed = ".*"]
+            [runners.kubernetes.pod_annotations_overwrite_allowed = ".*"]
+            [runners.kubernetes.pod_labels_overwrite_allowed = ".*"]
+
+    # Ressources du runner manager
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsUser: 999
+      fsGroup: 999
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: false
+      runAsNonRoot: true
+
+    # Service account avec permissions pour gérer les pods
+    rbac:
+      create: true
+      rules:
+        - resources: ["pods"]
+          verbs: ["list", "get", "watch", "create", "delete"]
+        - resources: ["pods/exec"]
+          verbs: ["create"]
+        - resources: ["pods/log"]
+          verbs: ["get"]
+        - resources: ["pods/attach"]
+          verbs: ["list", "get", "create", "delete", "update"]
+        - resources: ["secrets"]
+          verbs: ["list", "get", "create", "delete", "update"]
+        - resources: ["configmaps"]
+          verbs: ["list", "get", "create", "delete", "update"]
+
+    # Métriques
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        namespace: monitoring
+        labels:
+          app.kubernetes.io/part-of: kube-prometheus-stack
+
+  # =============================================================================
+  # Configuration Registry (registre de conteneurs)
+  # =============================================================================
+  registry:
+    enabled: true
+
+    # Ressources
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: false
+      runAsNonRoot: true
+
+    # Configuration du stockage
+    storage:
+      secret: gitlab-registry-storage-secret
+      key: config
+      extraKey: ""
+
+# =============================================================================
+# Configuration Traefik pour exposition des services
+# =============================================================================
+traefik:
+  ingressRoutes:
+    # GitLab principal
+    gitlab:
+      enabled: true
+      host: gitlab.clementpnn.com
+      tls:
+        enabled: true
+        secretName: gitlab-tls
+
+    # Registry
+    registry:
+      enabled: true
+      host: registry.clementpnn.com
+      tls:
+        enabled: true
+        secretName: gitlab-registry-tls
+
+    # MinIO Console
+    minio:
+      enabled: true
+      host: minio.clementpnn.com
+      tls:
+        enabled: true
+        secretName: gitlab-minio-tls
+
+    # GitLab Pages
+    pages:
+      enabled: true
+      host: pages.clementpnn.com
+      tls:
+        enabled: true
+        secretName: gitlab-pages-tls
+
+# =============================================================================
+# Configuration du monitoring
+# =============================================================================
+monitoring:
+  # ServiceMonitor pour Prometheus
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    labels:
+      app.kubernetes.io/part-of: kube-prometheus-stack
+    interval: 30s
+
+  # Règles d'alerte Prometheus
+  prometheusRule:
+    enabled: true
+    namespace: monitoring
+    labels:
+      app.kubernetes.io/part-of: kube-prometheus-stack
+    rules:
+      - alert: GitLabDown
+        expr: up{job="gitlab-webservice"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GitLab is down"
+          description: "GitLab has been down for more than 2 minutes"
+
+      - alert: GitLabHighMemoryUsage
+        expr: (container_memory_usage_bytes{pod=~"gitlab-webservice-.*"} / container_spec_memory_limit_bytes{pod=~"gitlab-webservice-.*"}) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GitLab high memory usage"
+          description: "GitLab memory usage is above 90%"
+
+      - alert: GitLabDatabaseConnectionFailed
+        expr: gitlab_database_connection_pool_busy > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GitLab database connection pool busy"
+          description: "GitLab database connection pool is more than 80% busy"
+
+# =============================================================================
+# Configuration de sauvegarde
+# =============================================================================
+backup:
+  enabled: true
+  schedule: "0 3 * * *"  # Tous les jours à 3h
+  retention: "30d"
+
+  # Configuration S3 pour les backups
+  s3:
+    bucket: "gitlab-backups-clementpnn"
+    region: "eu-west-3"
+    accessKey:
+      secret: gitlab-backup-s3-secret
+      key: access-key
+    secretKey:
+      secret: gitlab-backup-s3-secret
+      key: secret-key
+
+# =============================================================================
+# Configuration des secrets externes
+# =============================================================================
+secrets:
+  # Les secrets seront créés via un script séparé
+  create: true
+
+  # Configuration SMTP
+  smtp:
+    password: ""  # Mot de passe SMTP Gmail
+
+  # Configuration OAuth Keycloak
+  keycloak:
+    clientId: "gitlab"
+    clientSecret: ""  # Secret client Keycloak
+
+  # Configuration MinIO
+  minio:
+    accessKey: "minio-admin"
+    secretKey: ""  # Clé secrète MinIO générée
+
+  # Configuration backup S3
+  backup:
+    accessKey: ""  # Clé d'accès S3 pour backups
+    secretKey: ""  # Clé secrète S3 pour backups
+
+# =============================================================================
+# Configuration RBAC
+# =============================================================================
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: gitlab
+  annotations:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/component: git-repository
+
+# =============================================================================
+# Configuration de test
+# =============================================================================
+tests:
+  enabled: true
+
+# =============================================================================
+# Métadonnées
+# =============================================================================
+labels:
+  common:
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/component: git-repository
+    app.kubernetes.io/managed-by: argocd
+
+annotations:
+  common:
+    argocd.argoproj.io/sync-wave: "1"

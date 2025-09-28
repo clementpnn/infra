@@ -1,0 +1,582 @@
+# =============================================================================
+# Configuration Production pour Loki Stack
+# =============================================================================
+#
+# Stack complète de logging centralisé incluant :
+# - Loki (serveur de logs)
+# - Promtail (agent de collecte)
+# - Gateway (proxy/load balancer)
+#
+# Configuration optimisée pour production avec :
+# - Mode distribué pour haute disponibilité
+# - Persistence des données avec S3 compatible
+# - Sécurité renforcée
+# - Collecte automatique des logs Kubernetes
+# - Intégration avec Grafana/Prometheus
+# - Retention et compression optimisées
+#
+# =============================================================================
+
+loki:
+  # =============================================================================
+  # Configuration globale
+  # =============================================================================
+  global:
+    image:
+      registry: docker.io
+
+  # =============================================================================
+  # Mode de déploiement
+  # =============================================================================
+  deploymentMode: SimpleScalable
+
+  # =============================================================================
+  # Configuration Loki
+  # =============================================================================
+  loki:
+    # Configuration du serveur
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+
+    # Configuration des schémas
+    schemaConfig:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    # Configuration du stockage
+    storage:
+      type: filesystem
+      filesystem:
+        chunks_directory: /var/loki/chunks
+        rules_directory: /var/loki/rules
+
+    # Configuration de rétention
+    limits_config:
+      retention_period: 30d
+      enforce_metric_name: false
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      ingestion_rate_mb: 16
+      ingestion_burst_size_mb: 32
+      per_stream_rate_limit: 3MB
+      per_stream_rate_limit_burst: 15MB
+      max_cache_freshness_per_query: 10m
+      max_streams_per_user: 10000
+      max_line_size: 256000
+
+    # Configuration de compression
+    compactor:
+      working_directory: /var/loki/compactor
+      retention_enabled: true
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 150
+
+    # Configuration des index
+    table_manager:
+      retention_deletes_enabled: true
+      retention_period: 30d
+
+    # Configuration du chunk encoding
+    chunk_store_config:
+      max_look_back_period: 0s
+
+    query_range:
+      align_queries_with_step: true
+      max_retries: 5
+      cache_results: true
+
+    frontend:
+      max_outstanding_per_tenant: 256
+
+    # Configuration des règles
+    ruler:
+      storage:
+        type: local
+        local:
+          directory: /var/loki/rules
+      rule_path: /tmp/loki/scratch
+      alertmanager_url: http://prometheus-alertmanager:9093
+      ring:
+        kvstore:
+          store: inmemory
+      enable_api: true
+
+    # Configuration de l'authentification
+    auth_enabled: false
+
+  # =============================================================================
+  # Configuration des composants distribués
+  # =============================================================================
+
+  # Backend (Ingester, Querier, etc.)
+  backend:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 300m
+        memory: 1Gi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+    persistence:
+      enabled: true
+      storageClass: local-path
+      size: 50Gi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      fsGroup: 10001
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+  # Read (Query Frontend, Querier)
+  read:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      fsGroup: 10001
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+  # Write (Distributor, Ingester)
+  write:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 300m
+        memory: 1Gi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+    persistence:
+      enabled: true
+      storageClass: local-path
+      size: 30Gi
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      fsGroup: 10001
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+  # =============================================================================
+  # Configuration Gateway
+  # =============================================================================
+  gateway:
+    enabled: true
+    replicas: 2
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+    service:
+      port: 80
+      type: ClusterIP
+
+    # Configuration nginx
+    nginxConfig:
+      httpSnippet: |
+        map $http_x_scope_orgid $ensured_x_scope_orgid {
+            default "anonymous";
+            "~.+" $http_x_scope_orgid;
+        }
+      serverSnippet: |
+        client_max_body_size 100M;
+      locationSnippet: |
+        proxy_set_header X-Scope-OrgID $ensured_x_scope_orgid;
+
+    # Configuration de sécurité
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 101
+      runAsGroup: 101
+      fsGroup: 101
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+    # Ingress désactivé (on utilise Traefik)
+    ingress:
+      enabled: false
+
+  # =============================================================================
+  # Configuration Promtail (Agent de collecte)
+  # =============================================================================
+  promtail:
+    enabled: true
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+    # Configuration Promtail
+    config:
+      clients:
+        - url: http://loki-gateway:80/loki/api/v1/push
+
+      scrape_configs:
+        # Logs des conteneurs Kubernetes
+        - job_name: kubernetes-pods-name
+          kubernetes_sd_configs:
+            - role: pod
+          pipeline_stages:
+            - docker: {}
+          relabel_configs:
+            - source_labels:
+                - __meta_kubernetes_pod_label_name
+              target_label: __service__
+            - source_labels:
+                - __meta_kubernetes_pod_node_name
+              target_label: __host__
+            - action: drop
+              regex: ^$
+              source_labels:
+                - __service__
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+            - action: replace
+              replacement: $1
+              separator: /
+              source_labels:
+                - __meta_kubernetes_namespace
+                - __service__
+              target_label: job
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_namespace
+              target_label: namespace
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_pod_name
+              target_label: pod
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_pod_container_name
+              target_label: container
+            - replacement: /var/log/pods/*$1/*.log
+              separator: /
+              source_labels:
+                - __meta_kubernetes_pod_uid
+                - __meta_kubernetes_pod_container_name
+              target_label: __path__
+
+        # Logs système des nœuds
+        - job_name: kubernetes-pods-app
+          kubernetes_sd_configs:
+            - role: pod
+          pipeline_stages:
+            - docker: {}
+          relabel_configs:
+            - action: drop
+              regex: .+
+              source_labels:
+                - __meta_kubernetes_pod_label_name
+            - source_labels:
+                - __meta_kubernetes_pod_label_app
+              target_label: __service__
+            - source_labels:
+                - __meta_kubernetes_pod_node_name
+              target_label: __host__
+            - action: drop
+              regex: ^$
+              source_labels:
+                - __service__
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+            - action: replace
+              replacement: $1
+              separator: /
+              source_labels:
+                - __meta_kubernetes_namespace
+                - __service__
+              target_label: job
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_namespace
+              target_label: namespace
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_pod_name
+              target_label: pod
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_pod_container_name
+              target_label: container
+            - replacement: /var/log/pods/*$1/*.log
+              separator: /
+              source_labels:
+                - __meta_kubernetes_pod_uid
+                - __meta_kubernetes_pod_container_name
+              target_label: __path__
+
+        # Logs des services critiques
+        - job_name: kubernetes-pods-direct-controllers
+          kubernetes_sd_configs:
+            - role: pod
+          pipeline_stages:
+            - docker: {}
+          relabel_configs:
+            - action: drop
+              regex: .+
+              separator: ''
+              source_labels:
+                - __meta_kubernetes_pod_label_name
+                - __meta_kubernetes_pod_label_app
+            - action: drop
+              regex: ^([0-9a-z-.]+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$
+              source_labels:
+                - __meta_kubernetes_pod_controller_name
+            - source_labels:
+                - __meta_kubernetes_pod_controller_name
+              target_label: __service__
+            - source_labels:
+                - __meta_kubernetes_pod_node_name
+              target_label: __host__
+            - action: drop
+              regex: ^$
+              source_labels:
+                - __service__
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+            - action: replace
+              replacement: $1
+              separator: /
+              source_labels:
+                - __meta_kubernetes_namespace
+                - __service__
+              target_label: job
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_namespace
+              target_label: namespace
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_pod_name
+              target_label: pod
+            - action: replace
+              source_labels:
+                - __meta_kubernetes_pod_container_name
+              target_label: container
+            - replacement: /var/log/pods/*$1/*.log
+              separator: /
+              source_labels:
+                - __meta_kubernetes_pod_uid
+                - __meta_kubernetes_pod_container_name
+              target_label: __path__
+
+    # Configuration de sécurité
+    securityContext:
+      runAsUser: 0  # Nécessaire pour lire les logs
+      runAsGroup: 0
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+    # Tolérations pour déployer sur tous les nœuds
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+
+    # DaemonSet pour collecter sur tous les nœuds
+    daemonset:
+      enabled: true
+
+  # =============================================================================
+  # Configuration du monitoring
+  # =============================================================================
+  monitoring:
+    serviceMonitor:
+      enabled: true
+      labels:
+        app.kubernetes.io/part-of: kube-prometheus-stack
+
+    selfMonitoring:
+      enabled: true
+      grafanaAgent:
+        installOperator: false
+
+    lokiCanary:
+      enabled: true
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 50m
+          memory: 32Mi
+
+  # =============================================================================
+  # Configuration des tests
+  # =============================================================================
+  test:
+    enabled: false
+
+  # =============================================================================
+  # Configuration RBAC
+  # =============================================================================
+  rbac:
+    create: true
+    pspEnabled: false
+
+  serviceAccount:
+    create: true
+    name: loki
+    annotations:
+      app.kubernetes.io/name: loki
+      app.kubernetes.io/component: logging
+
+# =============================================================================
+# Configuration pour l'intégration Traefik (IngressRoute)
+# =============================================================================
+traefik:
+  ingressRoute:
+    enabled: true
+    host: loki.clementpnn.com
+    tls:
+      enabled: true
+      secretName: loki-tls
+
+# =============================================================================
+# Configuration de sauvegarde
+# =============================================================================
+backup:
+  enabled: true
+  schedule: "0 1 * * *"  # Tous les jours à 1h
+  retention: "30d"       # Conserver 30 jours
+
+# =============================================================================
+# Configuration des alertes Loki
+# =============================================================================
+alerting:
+  enabled: true
+  rules:
+    - name: loki-logs
+      rules:
+        - alert: LokiLogErrorRate
+          expr: |
+            (
+              sum(rate(loki_request_duration_seconds_count{status_code=~"5.."}[1m])) by (route)
+              /
+              sum(rate(loki_request_duration_seconds_count[1m])) by (route)
+            ) > 0.01
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Loki error rate is above 1%"
+            description: "Loki {{ $labels.route }} error rate is {{ $value | humanizePercentage }}"
+
+        - alert: LokiHighMemoryUsage
+          expr: |
+            (
+              process_resident_memory_bytes{job=~".*loki.*"}
+              /
+              container_spec_memory_limit_bytes{pod=~".*loki.*"}
+            ) > 0.90
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Loki memory usage is above 90%"
+            description: "Loki {{ $labels.pod }} memory usage is {{ $value | humanizePercentage }}"
+
+        - alert: LokiDiskSpaceUsage
+          expr: |
+            (
+              1 - (
+                loki_store_chunk_cache_entries{name="filesystem"}
+                /
+                loki_store_chunk_cache_max_entries{name="filesystem"}
+              )
+            ) < 0.10
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Loki disk space usage is above 90%"
+            description: "Loki filesystem cache is {{ $value | humanizePercentage }} full"
+
+# =============================================================================
+# Configuration des dashboards personnalisés
+# =============================================================================
+dashboards:
+  enabled: true
+  # Les dashboards seront créés via des ConfigMaps séparées
+
+# =============================================================================
+# Configuration de développement/debug (désactivé en production)
+# =============================================================================
+debug:
+  enabled: false

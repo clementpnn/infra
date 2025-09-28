@@ -1,0 +1,55 @@
+apiVersion: v2
+name: opnsense-wrapper
+description: Chart de production pour OPNsense Firewall avec contrôleur Kubernetes
+type: application
+version: 0.1.0
+appVersion: "24.1"
+
+dependencies:
+  - name: opnsense-controller
+    repository: "file://./charts/opnsense-controller"
+    version: "0.1.0"
+    condition: opnsense.enabled
+
+maintainers:
+  - name: "clement"
+    email: "contact@clementpnn.com"
+
+keywords:
+  - firewall
+  - security
+  - opnsense
+  - vpn
+  - networking
+  - ips
+  - ids
+
+sources:
+  - https://github.com/opnsense/core
+  - https://opnsense.org
+  - https://github.com/kubernetes-sigs/external-dns
+
+home: https://opnsense.org
+
+annotations:
+  category: Security
+  licenses: BSD-2-Clause
+  artifacthub.io/operator: "true"
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/containsSecurityUpdates: "true"
+  artifacthub.io/images: |
+    - name: opnsense-controller
+      image: opnsense/kubernetes-controller:v0.1.0
+    - name: opnsense-exporter
+      image: opnsense/prometheus-exporter:v0.1.0
+  artifacthub.io/crds: |
+    - kind: OPNsenseRule
+      version: v1
+      name: opnsense-rules.firewall.opnsense.org
+      displayName: OPNsense Firewall Rule
+      description: Define firewall rules for OPNsense
+    - kind: OPNsenseVPN
+      version: v1
+      name: opnsense-vpns.network.opnsense.org
+      displayName: OPNsense VPN Configuration
+      description: Define VPN configurations for OPNsense

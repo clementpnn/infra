@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitlab
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/part-of: infrastructure
+    app.kubernetes.io/component: git-repository
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "https://github.com/clementpnn/infra.git"
+    path: charts/gitlab
+    targetRevision: HEAD
+    helm:
+      valueFiles:
+        - values.yaml
+      parameters: []
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: gitlab
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  info:
+    - name: "Description"
+      value: "GitLab Enterprise - Git Repository and CI/CD Platform"
+    - name: "Owner"
+      value: "clement@clementpnn.com"
